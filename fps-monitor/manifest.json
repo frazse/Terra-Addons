@@ -1,0 +1,9 @@
+{
+  "id": "fps-monitor",
+  "name": "FPS Monitor",
+  "version": "0.1.0",
+  "description": "Small draggable FPS overlay.",
+  "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
+  "js": ["main.js"],
+  "css": ["style.css"]
+}

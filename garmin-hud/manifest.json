@@ -1,0 +1,38 @@
+{
+  "id": "garmin-hud",
+  "name": "Garmin HUD",
+  "version": "1.1.0",
+  "description": "Replaces standard stat cells with Garmin-style rolling graphs colored by live Biketerra zones.",
+  "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
+  "js": ["main.js"],
+  "connect": ["intervals.icu"],
+  "settings": [
+    {
+      "key": "intervals_id",
+      "label": "Intervals.icu Athlete ID",
+      "type": "text",
+      "description": "Looks like i12345. Found in Intervals.icu > Settings > Developer Settings."
+    },
+    {
+      "key": "intervals_api_key",
+      "label": "Intervals.icu API Key",
+      "type": "password",
+      "description": "Used to fetch indoor FTP and LTHR. Saved write-only in Terra."
+    },
+    {
+      "key": "fallback_ftp",
+      "label": "Fallback Cycling FTP (W)",
+      "type": "number",
+      "default": 310,
+      "description": "Used until Intervals.icu responds."
+    },
+    {
+      "key": "fallback_lthr",
+      "label": "Fallback Threshold HR (bpm)",
+      "type": "number",
+      "default": 173,
+      "description": "Used until Intervals.icu responds."
+    }
+  ],
+  "enabled": true
+}

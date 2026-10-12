@@ -1,0 +1,59 @@
+.btz-focus { outline: none !important; }
+#btz-ring { position: fixed; z-index: 2147483646; pointer-events: none; display: none; box-sizing: border-box; border: 3px solid #ff6b57; }
+#btz-pill { position: fixed; left: 12px; bottom: 12px; z-index: 2147483647; display: inline-flex; align-items: center;
+  font: 12px system-ui, sans-serif; padding: 6px 10px; border: 0; border-radius: 999px; background: #222; color: #fff;
+  opacity: .65; cursor: pointer; user-select: none; }
+#btz-pill:hover { opacity: 1; }
+/* in Biketerra's nav row */
+#btz-pill.btz-in-header { position: static; margin-left: 10px; font: inherit; font-size: .9em; padding: .4em .9em;
+  background: rgba(255,255,255,.16); color: rgba(255,255,255,.92); opacity: 1; z-index: auto; vertical-align: middle; white-space: nowrap; }
+#btz-pill.btz-in-header:hover { background: rgba(255,255,255,.26); }
+.btz-pill-wrap { list-style: none; display: inline-flex; align-items: center; }
+.btz-dot { width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; background: #888; flex: none; }
+.btz-dot.ok { background: #4ade80; }
+.btz-dot.wait { background: #fbbf24; }
+
+#btz-panel { display: none; position: fixed; top: 12px; right: 12px; bottom: 12px; width: 470px; z-index: 2147483647; overflow: auto;
+  box-sizing: border-box; padding: 14px 16px; border-radius: 12px; background: #15151a; color: #eee;
+  font: 14px system-ui, sans-serif; box-shadow: 0 10px 40px rgba(0,0,0,.6); }
+#btz-panel.open { display: block; }
+#btz-panel button, #btz-panel select { font: inherit; border-radius: 6px; border: 0; cursor: pointer; }
+#btz-panel h3 { margin: 0; display: inline-block; }
+#btz-panel h4 { margin: 18px 0 6px; }
+#btz-panel p { color: #aaa; font-size: 12px; margin: 6px 0; }
+#btz-panel .btz-close { float: right; background: none; color: #999; font-size: 20px; }
+#btz-panel .btz-primary { padding: 8px 14px; background: #ff6b57; color: #fff; }
+#btz-panel .btz-secondary { padding: 8px 14px; background: #444; color: #fff; }
+#btz-panel #btz-status { margin: 12px 0 4px; font-weight: 600; }
+#btz-panel table { border-collapse: collapse; width: 100%; }
+#btz-panel th { text-align: left; font-size: 11px; color: #999; font-weight: 600; padding: 4px 6px; }
+#btz-panel td { padding: 3px 6px; border-top: 1px solid #25252d; white-space: nowrap; }
+#btz-panel tr.on td { background: #4a2a24; }
+#btz-panel .btz-slot { min-width: 74px; padding: 4px 8px; background: #2a2a33; color: #eee; }
+#btz-panel .btz-slot:focus, #btz-panel .btz-focus { outline: 2px solid #ff6b57; }
+#btz-panel .btz-x { margin-left: 2px; padding: 2px 6px; background: none; color: #777; }
+#btz-panel .btz-x:hover { color: #fff; }
+/* Biketerra styles <select> itself (white background): force readable colours */
+#btz-panel select { padding: 4px 6px; appearance: auto; color-scheme: dark;
+  background-color: #2a2a33 !important; color: #eee !important; border: 1px solid #3a3a44 !important; }
+#btz-panel option { background-color: #2a2a33; color: #eee; }
+#btz-panel .btz-toggle { display: block; margin-top: 12px; font-weight: 600; cursor: pointer; }
+#btz-panel .btz-toggle input { margin-right: 6px; vertical-align: middle; }
+#btz-panel.btz-ride-off tbody td:nth-child(2) { opacity: .35; }
+#btz-panel #btz-saved { margin-left: 10px; color: #7ddc8a; font-size: 12px; }
+#btz-panel pre { background: #0c0c10; padding: 8px; border-radius: 6px; height: 120px; overflow: auto; font-size: 11px; white-space: pre-wrap; margin: 6px 0; }
+#btz-panel #btz-last { color: #ffd9d2; }
+#btz-panel details { margin-top: 14px; }
+#btz-panel summary { cursor: pointer; font-weight: 600; }
+#btz-panel #btz-vc { display: flex; gap: 32px; flex-wrap: wrap; margin-top: 10px; }
+#btz-panel .btz-vgroup { display: flex; flex-direction: column; gap: 10px; }
+#btz-panel .btz-vgrid { display: grid; grid-template-columns: repeat(3, 48px); gap: 4px; }
+#btz-panel .btz-vrow { display: flex; gap: 4px; }
+#btz-panel .btz-vb { min-width: 48px; padding: 8px 6px; background: #2a2a33; color: #eee; user-select: none; touch-action: none; font-size: 12px; }
+#btz-panel .btz-vb.held { background: #ff6b57; color: #fff; }
+
+/* modifier layers */
+#btz-panel .btz-tabs { display: flex; gap: 6px; margin: 10px 0 4px; }
+#btz-panel .btz-tab { padding: 5px 12px; background: #2a2a33; color: #bbb; }
+#btz-panel .btz-tab.active { background: #ff6b57; color: #fff; }
+#btz-panel .btz-slot.btz-inherit { opacity: .5; font-style: italic; }

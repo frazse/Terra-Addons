@@ -1,0 +1,26 @@
+{
+  "id": "biketerra-logger",
+  "name": "Biketerra Universal Logger",
+  "version": "9.0.0",
+  "description": "Rowing/cycling session logger: live graphs, FIT export, Intervals.icu and Strava upload, social follow. Ported from the userscript v8.15.2.",
+  "matches": ["https://biketerra.com/ride*"],
+  "js": ["fit.js", "logger.js"],
+  "css": ["style.css"],
+  "connect": ["intervals.icu", "www.strava.com"],
+  "settings": [
+    { "key": "intervals_id", "label": "Intervals.icu athlete ID", "type": "text",
+      "description": "Looks like i12345. Intervals.icu > Settings > Developer Settings." },
+    { "key": "intervals_api_key", "label": "Intervals.icu API key", "type": "password",
+      "description": "Used to read your zones and upload rides. Saved write-only: the page can never read it back." },
+    { "key": "strava_client_id", "label": "Strava client ID", "type": "text",
+      "description": "From strava.com/settings/api." },
+    { "key": "strava_client_secret", "label": "Strava client secret", "type": "password" },
+    { "key": "strava_refresh_token", "label": "Strava refresh token", "type": "password",
+      "description": "Needs the activity:write scope. Terra stores the new one whenever Strava hands out a fresh token." },
+    { "key": "rowing_ftp", "label": "Rowing FTP (W), fallback", "type": "number", "default": 293,
+      "description": "Used for the graph zones until Intervals.icu answers." },
+    { "key": "cycling_ftp", "label": "Cycling FTP (W), fallback", "type": "number", "default": 311 },
+    { "key": "threshold_hr", "label": "Threshold heart rate (bpm), fallback", "type": "number", "default": 173 },
+    { "key": "max_hr", "label": "Max heart rate (bpm), fallback", "type": "number", "default": 190 }
+  ]
+}
