@@ -9,13 +9,11 @@
 
     // Extract "Biketerra - [Activity Name]" from the page
     function getFormattedActivityName() {
-        // 1. Check the editable input field on the Biketerra activity page first
         const inputVal = document.querySelector('.editable-title')?.value?.trim();
         if (inputVal) {
             return inputVal.startsWith('Biketerra - ') ? inputVal : `Biketerra - ${inputVal}`;
         }
 
-        // 2. Fallback to <title> ("Activity - Rainbow Tour 2026 - ... - Biketerra")
         const rawTitle = document.title || '';
         const cleaned = rawTitle
         .replace(/^Activity\s*-\s*/i, '')
@@ -112,7 +110,7 @@
         ]));
         msgs.push(dataMsg(0, [u32(98765432), u32(toFT(startTimeMs)), u16(23), u16(40), u8(4)]));
 
-        // 2. Sport Message (Global Msg 12) - Includes Field 3 (name) for activity title
+        // 2. Sport Message (Global Msg 12) - Embeds activity title in Field 3 (name)
         const nameBytes = new TextEncoder().encode(activityName + '\0');
         msgs.push(defMsg(8, 12, [
             [0, 1, 0x00],                 // sport (2 = cycling)
@@ -125,7 +123,7 @@
                           u8Arr(Array.from(nameBytes))
         ]));
 
-        // 3. Workout Name (Global Msg 26)
+        // 3. Workout Name (Global Msg 26) - Embeds activity title in Field 8 (wkt_name)
         msgs.push(defMsg(7, 26, [
             [254, 2, 0x84],               // message_index (2B)
         [4, 1, 0x00],                 // sport (1B - 2 = cycling)
@@ -433,82 +431,6 @@
             return summary;
     }
 
-    // Rename the uploaded workout in Suunto / Sports-Tracker via STT sessionkey
-    async function renameLatestSuuntoWorkout(activityName, expectedStartMs) {
-        if (!(await terra.settings.has('stt_token'))) return;
-        try {
-            // Wait 1.5s for Suunto/Sports-Tracker DB to index the newly uploaded FIT workout
-            await new Promise(r => setTimeout(r, 1500));
-
-            const listRes = await terra.http.request({
-                method: 'GET',
-                url: 'https://api.sports-tracker.com/apiserver/v1/workouts?limited=true&limit=5',
-                headers: {
-                    'STTAuthorization': '{{setting:stt_token}}',
-                    'Accept': 'application/json'
-                }
-            });
-
-            if (listRes.status < 200 || listRes.status >= 300) return;
-            const listJson = JSON.parse(listRes.body || '{}');
-            const workouts = listJson.payload || [];
-
-            // Find the workout matching our start time (within 2 minutes) or fallback to the most recent
-            const target = workouts.find(w => Math.abs((w.startTime || 0) - expectedStartMs) < 120000) || workouts[0];
-            if (!target || !target.workoutKey) return;
-
-            terra.log(`[Suunto Export] Found workout ${target.workoutKey}, existing fields: ${JSON.stringify(target)}`);
-
-            const key = target.workoutKey;
-            const updatedObj = {
-                ...target,
-                description: activityName,
-                workoutName: activityName,
-                name: activityName
-            };
-
-            // Try the specific workout endpoint methods used by Sports-Tracker's web & mobile clients
-            const attempts = [
-                {
-                    method: 'PUT',
-                    url: `https://api.sports-tracker.com/apiserver/v1/workouts/${key}`,
-                    body: JSON.stringify(updatedObj)
-                },
-                {
-                    method: 'POST',
-                    url: `https://api.sports-tracker.com/apiserver/v1/workouts/${key}`,
-                    body: JSON.stringify(updatedObj)
-                },
-                {
-                    method: 'POST',
-                    url: `https://api.sports-tracker.com/apiserver/v1/workouts? token={{setting:stt_token}}`.replace('? ', '?'),
- // Sports-Tracker's web dashboard sometimes sends form-encoded or a single object to /workout/save
- body: JSON.stringify(updatedObj)
-                }
-            ];
-
-            for (const att of attempts) {
-                const res = await terra.http.request({
-                    method: att.method,
-                    url: att.url,
-                    headers: {
-                        'STTAuthorization': '{{setting:stt_token}}',
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json'
-                    },
-                    body: att.body
-                });
-
-                terra.log(`[Suunto Export] Rename attempt ${att.method} ${att.url.split('?')[0]} -> HTTP ${res.status}: ${(res.body || '').slice(0, 150)}`);
-                if (res.status >= 200 && res.status < 300) {
-                    break;
-                }
-            }
-        } catch (e) {
-            terra.log('[Suunto Export] Could not auto-rename via STT: ' + (e.message || e));
-        }
-    }
-
     // --- 2. UPLOAD VIA RUNALYZE ---
     async function handleSuuntoUpload(btn) {
         const labelSpan = btn.querySelector('.suunto-btn-label');
@@ -604,10 +526,6 @@
                 const isSuccess = alerts.some(a => a.toLowerCase().includes('successfully uploaded'));
 
                 if (uploadRes.status >= 200 && uploadRes.status < 400 && isSuccess) {
-                    labelSpan.textContent = 'Setting title...';
-                    const startTs = activityJson.rows?.[0]?.[0] || Date.now();
-                    await renameLatestSuuntoWorkout(activityName, startTs);
-
                     btn.dataset.state = 'done';
                     labelSpan.textContent = 'Uploaded to Suunto';
                     const svgSlot = btn.querySelector('.slot');

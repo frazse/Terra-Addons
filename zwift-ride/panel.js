@@ -51,7 +51,7 @@ function headerHost() {
   return { box, item };
 }
 function placePill() {
-  if (!pill) return;
+  if (!pill || !document.body) return;
   const host = headerHost();
   if (host) {
     let node = pill;
@@ -290,9 +290,16 @@ function buildPanel() {
   pillLabel = h('span', {}, 'Pair controller');
   pill = h('button', { id: 'btz-pill', type: 'button' }, pillDot, pillLabel);
   pill.addEventListener('click', () => togglePanel());
-  document.body.append(panel);
-  placePill();
-  pillTimer = setInterval(placePill, 500); // the page re-renders its header now and then
+
+  const mount = () => {
+    if (!document.body) return;
+    if (!panel.parentElement) document.body.append(panel);
+    placePill();
+  };
+  if (document.body) mount();
+  else addEventListener('DOMContentLoaded', mount, { once: true });
+
+  pillTimer = setInterval(mount, 500); // the page re-renders its header now and then
   terra.onCleanup(() => { clearInterval(pillTimer); panel.remove(); pill.remove(); if (pillWrap) pillWrap.remove(); });
   updateStatus();
 }
