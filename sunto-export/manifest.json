@@ -1,0 +1,28 @@
+{
+  "id": "suunto-export",
+  "name": "Suunto Activity Exporter",
+  "version": "1.3.0",
+  "description": "Adds an 'Upload to Suunto' button on Biketerra activity pages via Runalyze + sets title via Sports-Tracker.",
+  "matches": ["https://biketerra.com/activities/*"],
+  "js": ["main.js"],
+  "connect": [
+    "biketerra.com",
+    "runalyze.com",
+    "api.sports-tracker.com"
+  ],
+  "settings": [
+    {
+      "key": "runalyze_cookie",
+      "label": "Runalyze Cookie Header",
+      "type": "password",
+      "description": "Paste your Cookie header from runalyze.com (PHPSESSID=...; REMEMBERME=...)."
+    },
+    {
+      "key": "stt_token",
+      "label": "Sports-Tracker Sessionkey (For Activity Title)",
+      "type": "password",
+      "description": "localStorage.sessionkey from sports-tracker.com. Used to set the workout title in Suunto after upload."
+    }
+  ],
+  "enabled": true
+}
