@@ -169,16 +169,29 @@ function move(dir, fast) {
   else if (dir === 'up') scrollBy({ top: -innerHeight * 0.5, behavior: fast ? 'auto' : 'smooth' });
 }
 
-// Event and route pages: the selection should start on the "Ride now" (or "Sign up") button.
-const DEFAULT_PAGE = /^\/(events|routes)\/\d+(\/|$)/;
-// Lighter than visible(): this button is known, so don't reject it for being covered or still fading in.
+// Broadened regex to match any path containing /events/ or /routes/
+const DEFAULT_PAGE = /\/(events|routes)\//;
+
 const shown = (el) => {
   const r = el.getBoundingClientRect();
   return r.width >= 8 && r.height >= 8 && (!el.checkVisibility || el.checkVisibility({ checkVisibilityCSS: true }));
 };
+
 function findDefault() {
   if (!DEFAULT_PAGE.test(location.pathname)) return null;
-  const hits = [...document.querySelectorAll('button, a')].filter((b) => /^\s*(ride now|sign up)\s*$/i.test(b.textContent) && shown(b));
+
+  const hits = [...document.querySelectorAll('button, a')].filter((b) => {
+    const text = b.textContent.replace(/\s+/g, ' ').trim().toLowerCase();
+    const href = b.getAttribute('href') || '';
+    return (
+      text === 'ride now' ||
+      text === 'sign up' ||
+      text.includes('starting pen') ||
+      text.includes('enter pen') ||
+      href.includes('/ride?event=')
+    ) && shown(b);
+  });
+
   return hits.find((b) => b.classList.contains('btn-primary')) || hits[0] || null;
 }
 let autoTimer = 0;
