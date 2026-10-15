@@ -1,13 +1,14 @@
 {
   "id": "suunto-export",
-  "name": "Suunto Activity Exporter",
-  "version": "1.3.0",
-  "description": "Adds an 'Upload to Suunto' button on Biketerra activity pages via Runalyze.",
+  "name": "Suunto & Custom FIT Exporter",
+  "version": "3.1.0",
+  "description": "Uploads rides or custom rowing FIT files to Suunto (via Runalyze) and hijacks Biketerra's native Strava/Intervals upload with custom FIT data.",
   "matches": ["https://biketerra.com/activities/*"],
   "js": ["main.js"],
   "connect": [
     "biketerra.com",
-    "runalyze.com"
+    "runalyze.com",
+    "www.strava.com"
   ],
   "settings": [
     {
