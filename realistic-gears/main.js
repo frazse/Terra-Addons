@@ -1,32 +1,24 @@
 (async (terra) => {
   terra.log('REALISTIC GEARS ADDON LOADED. pathname = ' + location.pathname);
-  const FTMS_CONTROL_POINT = '00002ad9-0000-1000-8000-00805f9b34fb';
 
   // Default 2x12 Gravel setup: 46/30T front, 11-34T 12-speed rear
   let config = {
     front: [30, 46], // sorted small -> big (idx 0 = 30T, idx 1 = 46T)
 rear: [34, 30, 27, 24, 21, 19, 17, 15, 14, 13, 12, 11], // idx 0 = 34T (easiest) -> idx 11 = 11T (hardest)
-baseRatio: 2.15, // Neutral 1:1 reference ratio (e.g. 46x21 = 2.19) where trainer feels at stock baseline
- keyRearHarder: 'w',
- keyRearEasier: 's',
- keyFrontUp: 'q',
- keyFrontDown: 'q',
- hudPos: { bottom: '24px', right: '280px' }
+frontShifterMode: 'separate', // 'separate' (LS1=Small, LS2=Big) or 'toggle' (LS1 & LS2 both toggle)
+swapRearButtons: false,       // false: RS1=Easier, RS2=Harder | true: RS1=Harder, RS2=Easier
+keyRearHarder: 'w',
+keyRearEasier: 's',
+keyFrontUp: 'q',
+keyFrontDown: 'q',
+hudPos: { bottom: '24px', right: '280px' }
   };
 
   let state = {
     frontIdx: 1, // 46T
     rearIdx: 4,  // 21T (ratio ~2.19)
-ftmsChar: null,
-lastRawSim: {
-  wind: 100,   // 0.100 m/s
-  grade: 0,    // 0.00%
-  crr: 40,     // 0.0040
-  cw: 51       // 0.51 kg/m
-},
-isInternalWrite: false,
-writePending: false,
-queuedSimPacket: null
+vsChar: null,
+isInternalWrite: false
   };
 
   function parseTeethList(str, ascending = true) {
@@ -72,7 +64,6 @@ queuedSimPacket: null
   }
 
   // --- 1. NATIVE HARDWARE VIRTUAL SHIFTING ENGINE (00000003-19ca-4651-86e5-fa29dcdd09d1) ---
-  // KICKR CORE advertises Zwift Virtual Shifting under service 0000fc82-0000-1000-8000-00805f9b34fb
   const ZWIFT_VS_SERVICES = [
     '0000fc82-0000-1000-8000-00805f9b34fb',
     '00000001-19ca-4651-86e5-fa29dcdd09d1'
@@ -94,7 +85,6 @@ queuedSimPacket: null
   function buildNativeGearPacket() {
     const f = config.front[state.frontIdx] || 46;
     const r = config.rear[state.rearIdx] || 21;
-    // KICKR CORE expects gear ratio * 10000 (e.g. 46 / 19 = 2.4211 -> 24211)
     const ratioScaled = Math.round((f / r) * 10000);
     const ratioVarint = encodeVarint(ratioScaled);
     const inner = [0x10, ...ratioVarint, 0x20, 0xa0, 0x06, 0x28, 0xb0, 0x54];
@@ -132,7 +122,6 @@ queuedSimPacket: null
                   : ArrayBuffer.isView(val)
                   ? new Uint8Array(val.buffer, val.byteOffset, val.byteLength)
                   : null;
-                  // If Biketerra writes a 0x04 0x2a gear packet, override it with our active 2D gear!
                   if (u8 && u8.byteLength >= 6 && u8[0] === 0x04 && u8[1] === 0x2a) {
                     const overridePkt = buildNativeGearPacket();
                     return await origW.call(this, overridePkt, ...rest);
@@ -153,12 +142,122 @@ queuedSimPacket: null
     pushImmediateFtmsShift();
   }
 
-  async function scanAndBindExistingTrainer() {
+  // --- 1B. DIRECT ZWIFT RIDE CONTROLLER SHIFTER INTERCEPTOR ---
+  // Reads raw 0x23 protobuf button masks from Zwift Ride so zwift-ride addon keybinds can stay on default (LS=S, RS=W)!
+  const ZR_MASKS = {
+    shift_up_l: 0x100,  // LS1
+    shift_dn_l: 0x200,  // LS2
+    shift_up_r: 0x1000, // RS1
+    shift_dn_r: 0x2000  // RS2
+  };
+  const zrPrevMaskByDev = new Map();
+  const zrLastPressTime = {};
+
+  function readPbVarint(buf, pos) {
+    let result = 0, shift = 0, b;
+    do {
+      b = buf[pos++];
+      result += (b & 0x7f) * (2 ** shift);
+      shift += 7;
+    } while ((b & 0x80) && pos < buf.length);
+    return [result, pos];
+  }
+
+  function decodeZwiftRideButtons(devId, u8) {
+    if (!location.pathname.includes('/ride')) return;
+    if (!u8 || u8.length < 3 || u8[0] !== 0x23) return;
+
+    // Parse protobuf field 1 (wire type 0 -> tag === 0x08)
+    let pos = 1;
+    let buttonMap = null;
+    while (pos < u8.length) {
+      let tag;
+      [tag, pos] = readPbVarint(u8, pos);
+      const field = Math.floor(tag / 8), wire = tag & 7;
+      if (wire === 0) {
+        let v;
+        [v, pos] = readPbVarint(u8, pos);
+        if (field === 1) {
+          buttonMap = v;
+          break;
+        }
+      } else if (wire === 2) {
+        let len;
+        [len, pos] = readPbVarint(u8, pos);
+        pos += len;
+      } else if (wire === 1) pos += 8;
+      else if (wire === 5) pos += 4;
+      else break;
+    }
+
+    if (buttonMap === null) return;
+    const prev = zrPrevMaskByDev.get(devId);
+    zrPrevMaskByDev.set(devId, buttonMap);
+    if (prev === undefined) return;
+
+    const now = Date.now();
+    for (const [btnName, mask] of Object.entries(ZR_MASKS)) {
+      const wasPressed = (prev & mask) === 0;
+      const isPressed = (buttonMap & mask) === 0;
+      if (!wasPressed && isPressed) {
+        // De-duplicate across left/right tunnelled controllers (150ms window)
+        if (now - (zrLastPressTime[btnName] || 0) < 150) continue;
+        zrLastPressTime[btnName] = now;
+        handleZwiftRideShifterPress(btnName);
+      }
+    }
+  }
+
+  function handleZwiftRideShifterPress(btnName) {
+    if (btnName === 'shift_up_l') {
+      // LS1: Front Small Ring (or toggle if configured)
+      shiftFront(config.frontShifterMode === 'toggle' ? 0 : -1, 'zwift-ride:LS1');
+    } else if (btnName === 'shift_dn_l') {
+      // LS2: Front Big Ring (or toggle if configured)
+      shiftFront(config.frontShifterMode === 'toggle' ? 0 : +1, 'zwift-ride:LS2');
+    } else if (btnName === 'shift_up_r') {
+      // RS1: Rear Easier (or Harder if swapped)
+      shiftRear(config.swapRearButtons ? +1 : -1, 'zwift-ride:RS1');
+    } else if (btnName === 'shift_dn_r') {
+      // RS2: Rear Harder (or Easier if swapped)
+      shiftRear(config.swapRearButtons ? -1 : +1, 'zwift-ride:RS2');
+    }
+  }
+
+  async function hookZwiftRideDevice(dev) {
+    if (!dev || !dev.gatt || !dev.gatt.connected || dev.__terraZrShifterHooked) return;
+    try {
+      const svc = await dev.gatt.getPrimaryService('0000fc82-0000-1000-8000-00805f9b34fb');
+      if (!svc) return;
+      const chars = await svc.getCharacteristics();
+      for (const c of chars) {
+        if (c.properties && (c.properties.notify || c.properties.indicate)) {
+          c.addEventListener('characteristicvaluechanged', (e) => {
+            const v = e.target.value;
+            if (v) {
+              decodeZwiftRideButtons(dev.id, new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
+            }
+          });
+        }
+      }
+      dev.__terraZrShifterHooked = true;
+      dev.addEventListener('gattserverdisconnected', () => {
+        dev.__terraZrShifterHooked = false;
+        zrPrevMaskByDev.delete(dev.id);
+      }, { once: true });
+      terra.log(`Bound direct 2x12 shifter listener to Zwift Ride (${dev.id})`);
+    } catch (_) {}
+  }
+
+  async function scanAndBindDevices() {
     if (!core || !core.devices) return;
     for (const dev of core.devices.values()) {
       const name = (dev.name || '').toUpperCase();
-      if (name.includes('ZWIFT RIDE')) continue;
-      if (dev.gatt && dev.gatt.connected) {
+      if (name.includes('ZWIFT RIDE')) {
+        hookZwiftRideDevice(dev);
+        continue;
+      }
+      if (dev.gatt && dev.gatt.connected && !state.vsChar) {
         for (const sUuid of ZWIFT_VS_SERVICES) {
           try {
             const svc = await dev.gatt.getPrimaryService(sUuid);
@@ -166,31 +265,36 @@ queuedSimPacket: null
               const chr = await svc.getCharacteristic(ZWIFT_VS_RX_CHAR);
               if (chr) {
                 hookVsCharacteristic(chr, dev.name || dev.id);
-                return;
+                break;
               }
             }
-          } catch (_) {
-            // Try next service UUID
-          }
+          } catch (_) {}
         }
       }
     }
   }
 
   function installFtmsInterceptor() {
-    scanAndBindExistingTrainer();
-    terra.ble.onConnect(() => setTimeout(scanAndBindExistingTrainer, 300));
-    terra.ble.onPaired(() => setTimeout(scanAndBindExistingTrainer, 300));
+    scanAndBindDevices();
+    terra.ble.onConnect(() => setTimeout(scanAndBindDevices, 300));
+    terra.ble.onPaired(() => setTimeout(scanAndBindDevices, 300));
 
-    const pollId = setInterval(() => {
-      if (!state.vsChar) scanAndBindExistingTrainer();
-    }, 2000);
-      terra.onCleanup(() => clearInterval(pollId));
+    // Also listen to global BLE notifications if emitted by Terra shim
+    if (terra.ble && typeof terra.ble.onNotify === 'function') {
+      terra.ble.onNotify((evt) => {
+        if (evt && evt.bytes && evt.bytes[0] === 0x23) {
+          decodeZwiftRideButtons(evt.id || 'ble', evt.bytes);
+        }
+      });
+    }
+
+    const pollId = setInterval(scanAndBindDevices, 2000);
+    terra.onCleanup(() => clearInterval(pollId));
   }
 
   async function pushImmediateFtmsShift() {
     if (!state.vsChar) {
-      await scanAndBindExistingTrainer();
+      await scanAndBindDevices();
     }
     if (!state.vsChar) {
       terra.log('Shift queued (waiting for trainer 00000003-19ca connection)');
@@ -228,7 +332,6 @@ queuedSimPacket: null
     state.frontIdx = clampedFront;
     state.rearIdx = clampedRear;
 
-    // Immediately push new gear resistance to the trainer over FTMS
     pushImmediateFtmsShift();
 
     terra.storage.set('last_gear', { frontIdx: state.frontIdx, rearIdx: state.rearIdx }).catch(() => {});
@@ -253,27 +356,37 @@ queuedSimPacket: null
     return true;
   }
 
-  function shiftRear(dir) {
-    return applyGearChange(state.frontIdx, state.rearIdx + dir, 'rear');
+  function shiftRear(dir, source = 'rear') {
+    return applyGearChange(state.frontIdx, state.rearIdx + dir, source);
   }
 
-  function shiftFront(dir) {
+  function shiftFront(dir, source = 'front') {
     if (config.front.length <= 1) return false;
     let nextFront = state.frontIdx + dir;
     if (dir === 0) {
       nextFront = (state.frontIdx + 1) % config.front.length;
     }
-    return applyGearChange(nextFront, state.rearIdx, 'front');
+    return applyGearChange(nextFront, state.rearIdx, source);
   }
 
   terra.bus.on('realistic-gears:shift', (cmd) => {
     if (!cmd) return;
-    if (cmd.derailleur === 'front') shiftFront(cmd.dir ?? 0);
-    else if (cmd.derailleur === 'rear') shiftRear(cmd.dir ?? 1);
+    if (cmd.derailleur === 'front') shiftFront(cmd.dir ?? 0, 'bus:front');
+    else if (cmd.derailleur === 'rear') shiftRear(cmd.dir ?? 1, 'bus:rear');
   });
 
-    // --- 3. INTERCEPT KEYBOARD & ZWIFT RIDE SYNTHETIC KEYS ---
+    // --- 3. INTERCEPT KEYBOARD & BLOCK ZWIFT-RIDE DEFAULT 'W'/'S' KEYS ---
     const sameKey = (a, b) => a && b && a.toLowerCase() === b.toLowerCase();
+
+    function isZwiftRideConnected() {
+      if (!core || !core.devices) return false;
+      for (const dev of core.devices.values()) {
+        if ((dev.name || '').toUpperCase().includes('ZWIFT RIDE') && dev.gatt?.connected) {
+          return true;
+        }
+      }
+      return false;
+    }
 
     function onKeyEvent(e) {
       if (!location.pathname.includes('/ride')) return;
@@ -286,17 +399,23 @@ queuedSimPacket: null
       const isFrontUp = sameKey(k, config.keyFrontUp);
       const isFrontDown = sameKey(k, config.keyFrontDown);
 
-      // Always swallow 'w', 's', and configured shift keys so Biketerra's built-in shifting never interferes!
       if (isRearHarder || isRearEasier || isFrontUp || isFrontDown || sameKey(k, 'w') || sameKey(k, 's')) {
+        // Always block 'w'/'s' from reaching Biketerra so Biketerra's built-in shifting doesn't trigger
         e.preventDefault();
         e.stopImmediatePropagation();
 
+        // If this is a synthetic 'w' or 's' from zwift-ride (!e.isTrusted) and we are already reading
+        // raw BLE buttons from the Zwift Ride controller directly, ignore the synthetic key!
+        if (!e.isTrusted && isZwiftRideConnected() && (sameKey(k, 'w') || sameKey(k, 's'))) {
+          return;
+        }
+
         if (e.type === 'keydown' && !e.repeat) {
-          if (isRearHarder) shiftRear(+1);
-          else if (isRearEasier) shiftRear(-1);
-          else if (isFrontUp && isFrontDown) shiftFront(0);
-          else if (isFrontUp) shiftFront(+1);
-          else if (isFrontDown) shiftFront(-1);
+          if (isRearHarder) shiftRear(+1, 'key');
+          else if (isRearEasier) shiftRear(-1, 'key');
+          else if (isFrontUp && isFrontDown) shiftFront(0, 'key');
+          else if (isFrontUp) shiftFront(+1, 'key');
+          else if (isFrontDown) shiftFront(-1, 'key');
         }
       }
     }
