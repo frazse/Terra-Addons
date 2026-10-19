@@ -1,8 +1,8 @@
 {
   "id": "suunto-export",
   "name": "Suunto & Custom FIT Exporter",
-  "version": "3.1.0",
-  "description": "Uploads rides or custom rowing FIT files to Suunto (via Runalyze) and hijacks Biketerra's native Strava/Intervals upload with custom FIT data.",
+  "version": "3.2.0",
+  "description": "Uploads rides or custom rowing FIT files to Suunto (via Runalyze) with automatic Runalyze login & cookie refresh, and hijacks Biketerra's native Strava/Intervals upload with custom FIT data.",
   "matches": ["https://biketerra.com/activities/*"],
   "js": ["main.js"],
   "connect": [
@@ -12,10 +12,22 @@
   ],
   "settings": [
     {
-      "key": "runalyze_cookie",
-      "label": "Runalyze Cookie Header",
+      "key": "runalyze_username",
+      "label": "Runalyze Username or Email",
+      "type": "text",
+      "description": "Used to automatically log in and refresh PHPSESSID & REMEMBERME when expired."
+    },
+    {
+      "key": "runalyze_password",
+      "label": "Runalyze Password",
       "type": "password",
-      "description": "Paste your Cookie header from runalyze.com (PHPSESSID=...; REMEMBERME=...)."
+      "description": "Your Runalyze password for automatic session refresh."
+    },
+    {
+      "key": "runalyze_cookie",
+      "label": "Runalyze Cookie Header (Optional / Fallback)",
+      "type": "password",
+      "description": "Auto-filled on login, or paste manually (PHPSESSID=...; REMEMBERME=...)."
     }
   ],
   "enabled": true

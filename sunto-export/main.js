@@ -35,7 +35,6 @@
 
     // --- 0. EXTRACT STRAVA TOKEN FROM BIKETERRA PAGE HTML ---
     function parseStravaAuthFromHtml(html) {
-        // Matches strava:{...access_token:"...",refresh_token:"..."...} in SvelteKit hydration script
         const blockMatch = html.match(/strava\s*:\s*\{([^}]+)\}/);
         if (!blockMatch) return null;
         const block = blockMatch[1];
@@ -49,14 +48,11 @@
 }
 
 async function getFreshStravaToken(originalBodyStr) {
-    // 1. Check current page HTML first
     let auth = parseStravaAuthFromHtml(document.documentElement.innerHTML);
     const nowSec = Math.floor(Date.now() / 1000);
 
-    // Note: Biketerra's clock or expires_at is in seconds; check if token is valid
     if (auth && auth.accessToken) {
         terra.log(`[Suunto Export] Found Strava token in HTML (expires_at=${auth.expiresAt}, now=${nowSec})`);
-        // Test if token works against Strava API
         const testRes = await terra.http.request({
             method: 'GET',
             url: 'https://www.strava.com/api/v3/athlete',
@@ -68,8 +64,6 @@ async function getFreshStravaToken(originalBodyStr) {
         terra.log(`[Suunto Export] Token in HTML returned HTTP ${testRes.status}; triggering Biketerra server token refresh...`);
     }
 
-    // 2. If token is expired, send a minimal/invalid activity to Biketerra's /activities/service-upload
-    // Biketerra's server refreshes the Strava OAuth token BEFORE attempting the upload!
     try {
         const minimalPayload = JSON.parse(originalBodyStr);
         minimalPayload.activity = { ftp: 300, weight: 75000, keys: ['timestamp'], rows: [], events: [] };
@@ -81,7 +75,6 @@ async function getFreshStravaToken(originalBodyStr) {
         });
     } catch (_) {}
 
-    // 3. Fetch the current page HTML again to read the newly refreshed access_token
     const pageRes = await origFetch(window.location.href, { credentials: 'include', cache: 'no-store' });
     const freshHtml = await pageRes.text();
     auth = parseStravaAuthFromHtml(freshHtml);
@@ -238,8 +231,6 @@ window.fetch = async function (...args) {
             const payload = JSON.parse(opts.body);
             const shouldSwap = !!customFitBytes || exportMode === 'ROW';
 
-            // IF UPLOADING TO STRAVA IN ROW MODE (OR WITH CUSTOM FIT):
-            // Bypass Biketerra's VirtualRide-locked backend and push directly to Strava API as Rowing!
             if (payload.service === 'strava' && shouldSwap) {
                 terra.log('[Suunto Export] Intercepting Strava upload for direct Rowing FIT upload...');
                 const accessToken = await getFreshStravaToken(opts.body);
@@ -290,7 +281,6 @@ window.fetch = async function (...args) {
                 }
             }
 
-            // For Intervals.icu (or RIDE mode), let Biketerra's backend handle it with swapped rows
             if (shouldSwap) {
                 payload.title = getFormattedActivityName(payload.title);
 
@@ -753,19 +743,137 @@ async function getActiveFitPayload() {
     return { fitBytes, filename: safeFilename, activityName };
 }
 
-// --- 4. UPLOAD VIA RUNALYZE (SUUNTO) ---
+// --- 4. UPLOAD VIA RUNALYZE (WITH AUTO-LOGIN & COOKIE REFRESH) ---
+const UA = 'Mozilla/5.0 (X11; Linux x86_64; rv:157.0) Gecko/20100101 Firefox/157.0';
+
+// Extracts PHPSESSID and REMEMBERME from any response headers object
+function extractCookiesFromHeaders(headers, existingJar = {}) {
+    const jar = { ...existingJar };
+    if (!headers) return jar;
+
+    for (const [k, v] of Object.entries(headers)) {
+        if (k.toLowerCase() === 'set-cookie' && v) {
+            const rawList = Array.isArray(v) ? v : [String(v)];
+            for (const raw of rawList) {
+                const phpMatch = raw.match(/PHPSESSID=([^;\s,]+)/i);
+                if (phpMatch && phpMatch[1] !== 'deleted') jar.PHPSESSID = phpMatch[1];
+
+                const remMatch = raw.match(/REMEMBERME=([^;\s,]+)/i);
+                if (remMatch && remMatch[1] !== 'deleted') jar.REMEMBERME = remMatch[1];
+            }
+        }
+    }
+    return jar;
+}
+
+function formatCookieJar(jar) {
+    const parts = [];
+    if (jar.PHPSESSID) parts.push(`PHPSESSID=${jar.PHPSESSID}`);
+    if (jar.REMEMBERME) parts.push(`REMEMBERME=${jar.REMEMBERME}`);
+    return parts.join('; ');
+}
+
+async function loginToRunalyze() {
+    const hasUser = await terra.settings.has('runalyze_username');
+    const hasPass = await terra.settings.has('runalyze_password');
+    if (!hasUser || !hasPass) {
+        throw new Error('Runalyze session expired. Add your Runalyze Username & Password in Terra settings for auto-login.');
+    }
+
+    terra.log('[Suunto Export] Fetching https://runalyze.com/login to acquire CSRF token...');
+    const loginPageRes = await terra.http.request({
+        method: 'GET',
+        url: 'https://runalyze.com/login',
+        headers: {
+            'User-Agent': UA,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        }
+    });
+
+    let jar = extractCookiesFromHeaders(loginPageRes.headers);
+    const loginDoc = new DOMParser().parseFromString(loginPageRes.body || '', 'text/html');
+    const csrfInput = loginDoc.querySelector('input[name="_csrf_token"]');
+    const csrfToken = csrfInput ? csrfInput.getAttribute('value') || '' : '';
+
+    terra.log(`[Suunto Export] Submitting Runalyze login (csrf=${csrfToken ? 'found' : 'none'}, initialPHPSESSID=${!!jar.PHPSESSID})...`);
+
+    // Build URL-encoded login body using Terra's {{setting:...}} template injection
+    const bodyParts = [
+        `_username=${encodeURIComponent('{{setting:runalyze_username}}').replace(/%7B%7Bsetting%3Arunalyze_username%7D%7D/g, '{{setting:runalyze_username}}')}`,
+ `_password=${encodeURIComponent('{{setting:runalyze_password}}').replace(/%7B%7Bsetting%3Arunalyze_password%7D%7D/g, '{{setting:runalyze_password}}')}`,
+ `_remember_me=on`
+    ];
+    if (csrfToken) {
+        bodyParts.push(`_csrf_token=${encodeURIComponent(csrfToken)}`);
+    }
+
+    const loginHeaders = {
+        'User-Agent': UA,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Origin': 'https://runalyze.com',
+        'Referer': 'https://runalyze.com/login'
+    };
+    const initialCookie = formatCookieJar(jar);
+    if (initialCookie) loginHeaders['Cookie'] = initialCookie;
+
+    const postLoginRes = await terra.http.request({
+        method: 'POST',
+        url: 'https://runalyze.com/login',
+        headers: loginHeaders,
+        body: bodyParts.join('&')
+    });
+
+    jar = extractCookiesFromHeaders(postLoginRes.headers, jar);
+    const freshCookie = formatCookieJar(jar);
+
+    terra.log(`[Suunto Export] Login POST status=${postLoginRes.status}, hasPHPSESSID=${!!jar.PHPSESSID}, hasREMEMBERME=${!!jar.REMEMBERME}`);
+
+    if (!jar.PHPSESSID && !jar.REMEMBERME) {
+        terra.log(`[Suunto Export] Login response headers: ${JSON.stringify(postLoginRes.headers || {})}`);
+        throw new Error(`Runalyze auto-login did not return session cookies (HTTP ${postLoginRes.status}). Check your username/password.`);
+    }
+
+    // Cache the freshly minted cookie in terra.storage (and terra.settings if supported)
+    await terra.storage.set('cached_runalyze_cookie', freshCookie);
+    if (terra.settings && typeof terra.settings.set === 'function') {
+        try { await terra.settings.set('runalyze_cookie', freshCookie); } catch (_) {}
+    }
+
+    return freshCookie;
+}
+
+async function fetchRunalyzeUploadPage(cookieStr) {
+    return await terra.http.request({
+        method: 'GET',
+        url: 'https://runalyze.com/my/suunto/fit-upload',
+        headers: {
+            'Cookie': cookieStr,
+            'User-Agent': UA,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://runalyze.com/my/suunto/fit-upload'
+        }
+    });
+}
+
 async function handleSuuntoUpload(btn) {
     const labelSpan = btn.querySelector('.suunto-btn-label');
     const errBox = document.querySelector('.export-error');
     if (errBox) errBox.textContent = '';
 
-    if (!(await terra.settings.has('runalyze_cookie'))) {
-        if (errBox) errBox.textContent = 'Add your Runalyze Cookie in Terra settings first.';
+    const hasCookieSetting = await terra.settings.has('runalyze_cookie');
+    const hasLoginCreds = (await terra.settings.has('runalyze_username')) && (await terra.settings.has('runalyze_password'));
+    let activeCookie = await terra.storage.get('cached_runalyze_cookie', null);
+
+    if (!activeCookie && hasCookieSetting) {
+        activeCookie = '{{setting:runalyze_cookie}}';
+    }
+
+    if (!activeCookie && !hasLoginCreds) {
+        if (errBox) errBox.textContent = 'Add your Runalyze Username & Password (or Cookie) in Terra settings first.';
         terra.settings.open();
         return;
     }
-
-    const UA = 'Mozilla/5.0 (X11; Linux x86_64; rv:157.0) Gecko/20100101 Firefox/157.0';
 
     try {
         btn.disabled = true;
@@ -774,24 +882,40 @@ async function handleSuuntoUpload(btn) {
 
         const { fitBytes, filename } = await getActiveFitPayload();
 
+        // 1. If we don't have any cookie yet, log in right away
+        if (!activeCookie) {
+            labelSpan.textContent = 'Logging into Runalyze...';
+            activeCookie = await loginToRunalyze();
+        }
+
+        // 2. Test/Fetch the Suunto upload form with our current cookie
         labelSpan.textContent = 'Connecting to Runalyze...';
-        const pageRes = await terra.http.request({
-            method: 'GET',
-            url: 'https://runalyze.com/my/suunto/fit-upload',
-            headers: {
-                'Cookie': '{{setting:runalyze_cookie}}',
-                'User-Agent': UA,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Referer': 'https://runalyze.com/my/suunto/fit-upload'
-            }
-        });
+        let pageRes = await fetchRunalyzeUploadPage(activeCookie);
+        let doc = new DOMParser().parseFromString(pageRes.body || '', 'text/html');
+        let fileInput = doc.querySelector('input[type="file"]');
 
-        const doc = new DOMParser().parseFromString(pageRes.body || '', 'text/html');
-        const fileInput = doc.querySelector('input[type="file"]');
-
+        // 3. If cookie expired (HTTP 302 redirect to /login or missing file input), auto-refresh via login!
         if (pageRes.status < 200 || pageRes.status >= 300 || !fileInput) {
-            throw new Error(`Runalyze rejected GET (HTTP ${pageRes.status})`);
+            terra.log(`[Suunto Export] Cookie expired or rejected (HTTP ${pageRes.status}). Attempting auto-login refresh...`);
+            if (!hasLoginCreds) {
+                throw new Error(`Runalyze rejected GET (HTTP ${pageRes.status}) and no Username/Password configured for auto-refresh.`);
+            }
+            labelSpan.textContent = 'Refreshing Runalyze session...';
+            activeCookie = await loginToRunalyze();
+
+            pageRes = await fetchRunalyzeUploadPage(activeCookie);
+            doc = new DOMParser().parseFromString(pageRes.body || '', 'text/html');
+            fileInput = doc.querySelector('input[type="file"]');
+
+            if (pageRes.status < 200 || pageRes.status >= 300 || !fileInput) {
+                throw new Error(`Runalyze rejected GET after auto-login (HTTP ${pageRes.status})`);
+            }
+        }
+
+        // Also capture any rotated cookie headers from the GET request
+        const updatedJar = extractCookiesFromHeaders(pageRes.headers);
+        if (updatedJar.PHPSESSID || updatedJar.REMEMBERME) {
+            terra.log('[Suunto Export] Runalyze rotated cookie during GET; updating cache.');
         }
 
         const fileFieldName = fileInput.getAttribute('name') || 'file';
@@ -808,7 +932,7 @@ async function handleSuuntoUpload(btn) {
                 method: 'POST',
                 url: 'https://runalyze.com/my/suunto/fit-upload',
                 headers: {
-                    'Cookie': '{{setting:runalyze_cookie}}',
+                    'Cookie': activeCookie,
                     'User-Agent': UA,
                     'Referer': 'https://runalyze.com/my/suunto/fit-upload',
                     'Origin': 'https://runalyze.com'
