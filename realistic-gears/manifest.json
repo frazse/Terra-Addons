@@ -1,0 +1,55 @@
+{
+  "id": "realistic-gears",
+  "name": "Realistic 2x/1x Virtual Shifting",
+  "version": "1.1.0",
+  "description": "Emulates real-life 2x/1x front chainring and rear cassette shifting with configurable tooth counts and an on-screen gear HUD.",
+  "matches": [
+    "https://biketerra.com/*"
+  ],
+  "js": ["main.js"],
+  "settings": [
+    {
+      "key": "front_chainrings",
+      "label": "Front Chainrings (comma-separated teeth, small to big)",
+      "type": "text",
+      "default": "30, 46",
+      "description": "Example: '30, 46' for GRX 2x, '34, 50' for Road Compact, or '40' for 1x."
+    },
+    {
+      "key": "rear_cassette",
+      "label": "Rear Cassette (comma-separated teeth)",
+      "type": "text",
+      "default": "34, 30, 27, 24, 21, 19, 17, 15, 14, 13, 12, 11",
+      "description": "12-speed 11-34T default: 34, 30, 27, 24, 21, 19, 17, 15, 14, 13, 12, 11."
+    },
+    {
+      "key": "key_rear_harder",
+      "label": "Key: Rear Shift Harder (RS2)",
+      "type": "text",
+      "default": "w",
+      "description": "Key for Right Shifter Harder (smaller cog). Set RS2=w in Zwift Ride."
+    },
+    {
+      "key": "key_rear_easier",
+      "label": "Key: Rear Shift Easier (RS1)",
+      "type": "text",
+      "default": "s",
+      "description": "Key for Right Shifter Easier (larger cog). Set RS1=s in Zwift Ride."
+    },
+    {
+      "key": "key_front_up",
+      "label": "Key: Front Shift Big Ring / Toggle (LS2)",
+      "type": "text",
+      "default": "q",
+      "description": "Key for Left Shifter Up (or toggle if LS1 & LS2 both use 'q')."
+    },
+    {
+      "key": "key_front_down",
+      "label": "Key: Front Shift Small Ring / Toggle (LS1)",
+      "type": "text",
+      "default": "q",
+      "description": "Key for Left Shifter Down (if same as Front Up, toggles between 30T and 46T)."
+    }
+  ],
+  "enabled": true
+}

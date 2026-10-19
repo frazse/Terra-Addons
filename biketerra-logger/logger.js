@@ -658,8 +658,13 @@ async function loadRouteFromPage() {
 }
 
 function onBikeMessage(event) {
-  const ego = event.data?.ego; if (!ego) return;
-  const riders = event.data?.riders || [];
+  let data = event?.data;
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data); } catch (_) {}
+  }
+  console.log('[biketerra-logger] Received BroadcastChannel packet:', data);
+  const ego = data?.ego; if (!ego) return;
+  const riders = data?.riders || [];
   lastRiderList = riders;
 
   if (ego.lat != null) live.lat = ego.lat; if (ego.lng != null) live.lng = ego.lng;
@@ -896,7 +901,7 @@ terra.onCleanup(() => {
 });
 
 // ---- start ----
-sportMode = await terra.storage.get('lastSportMode', 'ROW');
+sportMode = await terra.storage.get('lastSportMode', 'BIKE');
 powerGate = await terra.storage.get('powerGateSetting', 100);
 await loadSettings();
 terra.settings.onChange(async () => { await loadSettings(); fetchAthleteZonesFromIntervals(); });

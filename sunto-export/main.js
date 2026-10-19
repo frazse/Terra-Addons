@@ -926,7 +926,30 @@ function injectExportControls() {
 
     rideBtn.addEventListener('click', () => setMode('RIDE'));
     rowBtn.addEventListener('click', () => setMode('ROW'));
-    pickBtn.addEventListener('click', () => fileInp.click());
+    pickBtn.addEventListener('click', async () => {
+        if (window.terra && terra.files && terra.files.pick) {
+            try {
+                const res = await terra.files.pick({ accept: '.fit' });
+                if (res && res.base64) {
+                    const bin = atob(res.base64);
+                    const bytes = new Uint8Array(bin.length);
+                    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+                    customFitBytes = bytes;
+                    customFitName = res.name || 'custom.fit';
+                    customDecodedActivity = null;
+                    pickBtn.textContent = `✓ ${customFitName}`;
+                    pickBtn.style.borderColor = '#5DCAA5';
+                    pickBtn.style.color = '#5DCAA5';
+                    clearBtn.style.display = 'inline-block';
+                    updateHijackBadges();
+                    return;
+                }
+            } catch (e) {
+                console.warn('[Suunto Export] terra.files.pick error/canceled:', e);
+            }
+        }
+        fileInp.click();
+    });
 
     fileInp.addEventListener('change', async () => {
         const file = fileInp.files?.[0];
