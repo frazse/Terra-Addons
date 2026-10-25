@@ -1,0 +1,68 @@
+{
+  "id": "karoo-bridge",
+  "name": "Hammerhead Karoo Live Broadcast Bridge",
+  "version": "1.2.0",
+  "description": "Streams live Biketerra ride telemetry (GPS, speed, power, cadence, HR, gears) over UDP to a Hammerhead Karoo, where the companion app plays it back as mock GPS. Also pushes the ride route to your Hammerhead account as a native route.",
+  "matches": [
+    "https://biketerra.com/*"
+  ],
+  "enabled": true,
+  "js": ["main.js"],
+  "connect": [
+    "dashboard.hammerhead.io",
+    "api.hammerhead.io"
+  ],
+  "settings": [
+    {
+      "key": "karoo_ip",
+      "label": "Karoo Wi-Fi IP Address",
+      "type": "text",
+      "default": "192.168.1.150",
+      "description": "The Wi-Fi IP shown on the Karoo (also displayed by the companion app). Must match for UDP delivery."
+    },
+    {
+      "key": "karoo_port",
+      "label": "UDP Port",
+      "type": "number",
+      "default": 41234,
+      "description": "UDP port the companion app listens on."
+    },
+    {
+      "key": "alt_offset",
+      "label": "Elevation offset (m)",
+      "type": "number",
+      "default": 0,
+      "description": "Added to the game's elevation before sending to the Karoo. The Karoo's altitude display can sit above or below the game's (geoid / mean-sea-level correction). To make them match, enter (game − Karoo): e.g. game shows 20 m while the Karoo shows 25 m → enter -5."
+    },
+    {
+      "key": "hh_username",
+      "label": "Hammerhead / SRAM Email (Auto-Login)",
+      "type": "text",
+      "description": "Your Hammerhead login email. Used to automatically fetch & refresh your 1h dashboard JWT and user ID."
+    },
+    {
+      "key": "hh_password",
+      "label": "Hammerhead / SRAM Password (Auto-Login)",
+      "type": "password",
+      "description": "Your Hammerhead password for automatic token refresh."
+    },
+    {
+      "key": "hh_refresh_token",
+      "label": "Hammerhead Refresh Token (Optional Fallback)",
+      "type": "password",
+      "description": "Auto-populated on login, or paste your refresh_token from dashboard.hammerhead.io if using SRAM SSO."
+    },
+    {
+      "key": "hh_user_id",
+      "label": "Hammerhead user ID (Auto-detected if blank)",
+      "type": "text",
+      "description": "Auto-extracted from the JWT 'sub' claim when using auto-login, or enter manually."
+    },
+    {
+      "key": "hh_token",
+      "label": "Hammerhead dashboard token (Optional Manual Override)",
+      "type": "password",
+      "description": "Auto-refreshed when using email/password or refresh token."
+    }
+  ]
+}
