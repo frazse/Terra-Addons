@@ -743,10 +743,19 @@ async function getActiveFitPayload() {
     return { fitBytes, filename: safeFilename, activityName };
 }
 
-// --- 4. UPLOAD VIA RUNALYZE (WITH AUTO-LOGIN & COOKIE REFRESH) ---
+// --- 4. UPLOAD VIA RUNALYZE (WITH COOKIE ROTATION & CSRF SYNC) ---
 const UA = 'Mozilla/5.0 (X11; Linux x86_64; rv:157.0) Gecko/20100101 Firefox/157.0';
 
-// Extracts PHPSESSID and REMEMBERME from any response headers object
+function parseCookieString(str) {
+    const jar = {};
+    if (!str || typeof str !== 'string') return jar;
+    const php = str.match(/PHPSESSID=([^;\s,]+)/i);
+    if (php && php[1] && !php[1].includes('{{')) jar.PHPSESSID = php[1];
+    const rem = str.match(/REMEMBERME=([^;\s,]+)/i);
+    if (rem && rem[1] && !rem[1].includes('{{')) jar.REMEMBERME = rem[1];
+    return jar;
+}
+
 function extractCookiesFromHeaders(headers, existingJar = {}) {
     const jar = { ...existingJar };
     if (!headers) return jar;
@@ -755,11 +764,14 @@ function extractCookiesFromHeaders(headers, existingJar = {}) {
         if (k.toLowerCase() === 'set-cookie' && v) {
             const rawList = Array.isArray(v) ? v : [String(v)];
             for (const raw of rawList) {
-                const phpMatch = raw.match(/PHPSESSID=([^;\s,]+)/i);
-                if (phpMatch && phpMatch[1] !== 'deleted') jar.PHPSESSID = phpMatch[1];
-
-                const remMatch = raw.match(/REMEMBERME=([^;\s,]+)/i);
-                if (remMatch && remMatch[1] !== 'deleted') jar.REMEMBERME = remMatch[1];
+                const phpMatches = [...raw.matchAll(/PHPSESSID=([^;\s,]+)/gi)];
+                for (const m of phpMatches) {
+                    if (m[1] && m[1] !== 'deleted') jar.PHPSESSID = m[1];
+                }
+                const remMatches = [...raw.matchAll(/REMEMBERME=([^;\s,]+)/gi)];
+                for (const m of remMatches) {
+                    if (m[1] && m[1] !== 'deleted') jar.REMEMBERME = m[1];
+                }
             }
         }
     }
@@ -773,14 +785,24 @@ function formatCookieJar(jar) {
     return parts.join('; ');
 }
 
+async function saveCookieJar(jar) {
+    const cookieStr = formatCookieJar(jar);
+    if (!cookieStr) return '';
+    await terra.storage.set('cached_runalyze_cookie', cookieStr);
+    if (terra.settings && typeof terra.settings.set === 'function') {
+        try { await terra.settings.set('runalyze_cookie', cookieStr); } catch (_) {}
+    }
+    return cookieStr;
+}
+
 async function loginToRunalyze() {
     const hasUser = await terra.settings.has('runalyze_username');
     const hasPass = await terra.settings.has('runalyze_password');
     if (!hasUser || !hasPass) {
-        throw new Error('Runalyze session expired. Add your Runalyze Username & Password in Terra settings for auto-login.');
+        throw new Error('Runalyze session expired. Add your Runalyze Username & Password in Terra settings.');
     }
 
-    terra.log('[Suunto Export] Fetching https://runalyze.com/login to acquire CSRF token...');
+    terra.log('[Suunto Export] Fetching https://runalyze.com/login to acquire CSRF token & initial PHPSESSID...');
     const loginPageRes = await terra.http.request({
         method: 'GET',
         url: 'https://runalyze.com/login',
@@ -795,17 +817,18 @@ async function loginToRunalyze() {
     const csrfInput = loginDoc.querySelector('input[name="_csrf_token"]');
     const csrfToken = csrfInput ? csrfInput.getAttribute('value') || '' : '';
 
-    terra.log(`[Suunto Export] Submitting Runalyze login (csrf=${csrfToken ? 'found' : 'none'}, initialPHPSESSID=${!!jar.PHPSESSID})...`);
+    // Scrape all hidden inputs from the login form just in case
+    const loginFields = {
+        _username: '{{setting:runalyze_username}}',
+        _password: '{{setting:runalyze_password}}',
+        _remember_me: 'on'
+    };
+    if (csrfToken) loginFields._csrf_token = csrfToken;
 
-    // Build URL-encoded login body using Terra's {{setting:...}} template injection
-    const bodyParts = [
-        `_username=${encodeURIComponent('{{setting:runalyze_username}}').replace(/%7B%7Bsetting%3Arunalyze_username%7D%7D/g, '{{setting:runalyze_username}}')}`,
- `_password=${encodeURIComponent('{{setting:runalyze_password}}').replace(/%7B%7Bsetting%3Arunalyze_password%7D%7D/g, '{{setting:runalyze_password}}')}`,
- `_remember_me=on`
-    ];
-    if (csrfToken) {
-        bodyParts.push(`_csrf_token=${encodeURIComponent(csrfToken)}`);
-    }
+    const bodyParts = Object.entries(loginFields).map(([k, v]) => {
+        if (String(v).startsWith('{{setting:')) return `${encodeURIComponent(k)}=${v}`;
+        return `${encodeURIComponent(k)}=${encodeURIComponent(v)}`;
+    });
 
     const loginHeaders = {
         'User-Agent': UA,
@@ -816,6 +839,8 @@ async function loginToRunalyze() {
     const initialCookie = formatCookieJar(jar);
     if (initialCookie) loginHeaders['Cookie'] = initialCookie;
 
+    terra.log(`[Suunto Export] Submitting Runalyze login (csrf=${csrfToken ? 'yes' : 'no'}, initPHPSESSID=${!!jar.PHPSESSID})...`);
+
     const postLoginRes = await terra.http.request({
         method: 'POST',
         url: 'https://runalyze.com/login',
@@ -824,22 +849,16 @@ async function loginToRunalyze() {
     });
 
     jar = extractCookiesFromHeaders(postLoginRes.headers, jar);
-    const freshCookie = formatCookieJar(jar);
+    const locHeader = postLoginRes.headers?.location || postLoginRes.headers?.Location || [];
+    const redirectLocation = Array.isArray(locHeader) ? (locHeader[0] || '') : String(locHeader);
 
-    terra.log(`[Suunto Export] Login POST status=${postLoginRes.status}, hasPHPSESSID=${!!jar.PHPSESSID}, hasREMEMBERME=${!!jar.REMEMBERME}`);
+    terra.log(`[Suunto Export] Login POST status=${postLoginRes.status}, redirect="${redirectLocation}", hasPHPSESSID=${!!jar.PHPSESSID}, hasREMEMBERME=${!!jar.REMEMBERME}`);
 
-    if (!jar.PHPSESSID && !jar.REMEMBERME) {
-        terra.log(`[Suunto Export] Login response headers: ${JSON.stringify(postLoginRes.headers || {})}`);
-        throw new Error(`Runalyze auto-login did not return session cookies (HTTP ${postLoginRes.status}). Check your username/password.`);
+    if (redirectLocation.includes('/login') || (!jar.REMEMBERME && !jar.PHPSESSID)) {
+        throw new Error(`Runalyze login rejected (redirected to ${redirectLocation || 'login'}). Check your username/password.`);
     }
 
-    // Cache the freshly minted cookie in terra.storage (and terra.settings if supported)
-    await terra.storage.set('cached_runalyze_cookie', freshCookie);
-    if (terra.settings && typeof terra.settings.set === 'function') {
-        try { await terra.settings.set('runalyze_cookie', freshCookie); } catch (_) {}
-    }
-
-    return freshCookie;
+    return { cookieStr: await saveCookieJar(jar), jar };
 }
 
 async function fetchRunalyzeUploadPage(cookieStr) {
@@ -864,6 +883,7 @@ async function handleSuuntoUpload(btn) {
     const hasCookieSetting = await terra.settings.has('runalyze_cookie');
     const hasLoginCreds = (await terra.settings.has('runalyze_username')) && (await terra.settings.has('runalyze_password'));
     let activeCookie = await terra.storage.get('cached_runalyze_cookie', null);
+    let activeJar = parseCookieString(activeCookie);
 
     if (!activeCookie && hasCookieSetting) {
         activeCookie = '{{setting:runalyze_cookie}}';
@@ -882,28 +902,47 @@ async function handleSuuntoUpload(btn) {
 
         const { fitBytes, filename } = await getActiveFitPayload();
 
-        // 1. If we don't have any cookie yet, log in right away
         if (!activeCookie) {
             labelSpan.textContent = 'Logging into Runalyze...';
-            activeCookie = await loginToRunalyze();
+            const loginRes = await loginToRunalyze();
+            activeCookie = loginRes.cookieStr;
+            activeJar = loginRes.jar;
         }
 
-        // 2. Test/Fetch the Suunto upload form with our current cookie
         labelSpan.textContent = 'Connecting to Runalyze...';
         let pageRes = await fetchRunalyzeUploadPage(activeCookie);
+
+        // CRITICAL FIX: Merge any rotated PHPSESSID/REMEMBERME from GET response headers BEFORE POSTing!
+        const rotatedJar = extractCookiesFromHeaders(pageRes.headers, activeJar);
+        if (rotatedJar.PHPSESSID !== activeJar.PHPSESSID || rotatedJar.REMEMBERME !== activeJar.REMEMBERME) {
+            activeJar = rotatedJar;
+            if (activeJar.PHPSESSID || activeJar.REMEMBERME) {
+                activeCookie = await saveCookieJar(activeJar);
+                terra.log(`[Suunto Export] Updated rotated session cookies from GET (hasPHPSESSID=${!!activeJar.PHPSESSID}, hasREMEMBERME=${!!activeJar.REMEMBERME})`);
+            }
+        }
+
         let doc = new DOMParser().parseFromString(pageRes.body || '', 'text/html');
         let fileInput = doc.querySelector('input[type="file"]');
 
-        // 3. If cookie expired (HTTP 302 redirect to /login or missing file input), auto-refresh via login!
+        // If GET redirected to /login (302) or form is missing, do a fresh login!
         if (pageRes.status < 200 || pageRes.status >= 300 || !fileInput) {
-            terra.log(`[Suunto Export] Cookie expired or rejected (HTTP ${pageRes.status}). Attempting auto-login refresh...`);
+            terra.log(`[Suunto Export] GET status=${pageRes.status}, fileInput=${!!fileInput}. Refreshing session via login...`);
             if (!hasLoginCreds) {
-                throw new Error(`Runalyze rejected GET (HTTP ${pageRes.status}) and no Username/Password configured for auto-refresh.`);
+                throw new Error(`Runalyze session expired (HTTP ${pageRes.status}). Add Username & Password in settings.`);
             }
             labelSpan.textContent = 'Refreshing Runalyze session...';
-            activeCookie = await loginToRunalyze();
+            const loginRes = await loginToRunalyze();
+            activeCookie = loginRes.cookieStr;
+            activeJar = loginRes.jar;
 
             pageRes = await fetchRunalyzeUploadPage(activeCookie);
+            const postLoginGetJar = extractCookiesFromHeaders(pageRes.headers, activeJar);
+            if (postLoginGetJar.PHPSESSID || postLoginGetJar.REMEMBERME) {
+                activeJar = postLoginGetJar;
+                activeCookie = await saveCookieJar(activeJar);
+            }
+
             doc = new DOMParser().parseFromString(pageRes.body || '', 'text/html');
             fileInput = doc.querySelector('input[type="file"]');
 
@@ -912,28 +951,28 @@ async function handleSuuntoUpload(btn) {
             }
         }
 
-        // Also capture any rotated cookie headers from the GET request
-        const updatedJar = extractCookiesFromHeaders(pageRes.headers);
-        if (updatedJar.PHPSESSID || updatedJar.REMEMBERME) {
-            terra.log('[Suunto Export] Runalyze rotated cookie during GET; updating cache.');
-        }
+        const formEl = fileInput.closest('form') || doc;
+        const formAction = formEl.getAttribute?.('action') || '/my/suunto/fit-upload';
+        const postUrl = formAction.startsWith('http') ? formAction : `https://runalyze.com${formAction.startsWith('/') ? '' : '/'}${formAction}`;
 
         const fileFieldName = fileInput.getAttribute('name') || 'file';
         const extraFields = {};
-        const formEl = fileInput.closest('form') || doc;
         formEl.querySelectorAll('input[type="hidden"]').forEach(inp => {
             const name = inp.getAttribute('name');
             const val = inp.getAttribute('value');
             if (name && val !== null) extraFields[name] = val;
         });
 
+            terra.log(`[Suunto Export] Uploading "${filename}" to ${postUrl} (field="${fileFieldName}", hiddenFields=${JSON.stringify(Object.keys(extraFields))})`);
+
             labelSpan.textContent = 'Uploading to Suunto...';
             const uploadRes = await terra.http.request({
                 method: 'POST',
-                url: 'https://runalyze.com/my/suunto/fit-upload',
+                url: postUrl,
                 headers: {
                     'Cookie': activeCookie,
                     'User-Agent': UA,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                     'Referer': 'https://runalyze.com/my/suunto/fit-upload',
                     'Origin': 'https://runalyze.com'
                 },
@@ -948,14 +987,25 @@ async function handleSuuntoUpload(btn) {
                 }
             });
 
+            // Save any cookies rotated during the POST response as well
+            const postJar = extractCookiesFromHeaders(uploadRes.headers, activeJar);
+            if (postJar.PHPSESSID !== activeJar.PHPSESSID || postJar.REMEMBERME !== activeJar.REMEMBERME) {
+                await saveCookieJar(postJar);
+            }
+
             const upDoc = new DOMParser().parseFromString(uploadRes.body || '', 'text/html');
-            const alerts = Array.from(upDoc.querySelectorAll('.alert, .flash-message, .error, .c-alert'))
-            .map(el => el.textContent.replace(/✕/g, '').trim())
+            const alerts = Array.from(upDoc.querySelectorAll(
+                '.alert, .flash-message, .error, .c-alert, .form-error-message, .invalid-feedback, .help-block, ul.form-errors li'
+            ))
+            .map(el => el.textContent.replace(/✕/g, '').replace(/\s+/g, ' ').trim())
             .filter(Boolean);
 
             terra.log(`[Suunto Export] POST status=${uploadRes.status}, alerts=${JSON.stringify(alerts)}`);
 
-            const isSuccess = alerts.some(a => a.toLowerCase().includes('successfully uploaded'));
+            const bodyLower = (uploadRes.body || '').toLowerCase();
+            const isSuccess =
+            alerts.some(a => /successfully uploaded|erfolgreich|uploaded to suunto/i.test(a)) ||
+            bodyLower.includes('successfully uploaded');
 
             if (uploadRes.status >= 200 && uploadRes.status < 400 && isSuccess) {
                 btn.dataset.state = 'done';
@@ -965,6 +1015,12 @@ async function handleSuuntoUpload(btn) {
                     svgSlot.innerHTML = `<svg viewBox="0 0 24 24"><use href="#export-check"></use></svg>`;
                 }
             } else {
+                // Log a snippet of the HTML body if no alert matched so we can see exact server output
+                const mainText = (upDoc.querySelector('main, .content, form, body')?.textContent || '')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .slice(0, 300);
+                terra.log(`[Suunto Export] Unexpected HTTP ${uploadRes.status} page text: "${mainText}"`);
                 const errMsg = alerts.length > 0 ? alerts.join(' | ') : `Upload failed (HTTP ${uploadRes.status})`;
                 throw new Error(errMsg);
             }
