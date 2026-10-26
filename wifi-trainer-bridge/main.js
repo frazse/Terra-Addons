@@ -11,7 +11,9 @@
 //            write to the Kickr.  Kickr 2AD9/WIA notifies relay back.
 //
 //   Setting: "host" (Kickr IP), "port" (WFTNP TCP port; Wahoo's spec default
-//            is 36866, recent Kickr Wi-Fi units often bind 36867 — see manifest).
+//            is 36866 — verified for this unit by its previous working client.
+//            The Kickr also runs a separate _zwift-protocol socket (observed
+//            on 36867, silent to WFTNP) — used here only as last-resort fallback).
 // ============================================================================
 
 // ---------- byte helpers ----------
@@ -401,6 +403,9 @@ class WahooBridge {
     this.conn = null;
     this.buf = new Uint8Array(0);
     this.seq = 0;
+    this.lastPort = null;
+    this.badPort = null;
+    this._lastCpOpcode = undefined;
     this.pending = new Map(); // seq → {resolve, reject, timer, label}
     this.timer = null;
     this.backoff = 2000;
@@ -424,26 +429,70 @@ class WahooBridge {
   }
 
   // Connect + discovery, single-flight, with exponential-backoff retries.
+  // The Kickr is a single-session server — it latches and refuses new
+  // connections for a while after each session. Known WFTNP ports:
+  //   36866 — spec default; the client that previously drove this exact
+  //           Kickr connected here successfully (device ground truth).
+  //   36867 — observed open on this unit, but it answered neither 6-byte nor
+  //           8-byte WFTNP DISCOVER; it matches the mDNS-advertised separate
+  //           _zwift-protocol socket. Kept only as a last-resort fallback.
+  // Refused attempts are plain RSTs and burn no device session, so probing
+  // both is safe. If a port connects but discovery fails (wrong protocol),
+  // remember it as bad so the next cycle prefers the other port and we stop
+  // spending sessions on it.
   async loop() {
     if (this.connecting || this.stopping) return;
     this.connecting = true;
     let ok = false;
     try {
       const s = (await this.terra.settings.all()) || {};
-      const portSetting = Number(s.port);
-      const port = Number.isFinite(portSetting) && portSetting > 0 ? Math.round(portSetting) : 36867;
-      const conn = await this.terra.tcp.connect('{{setting:host}}', port, 5000);
+      const configured = Math.round(Number(s.port));
+      const first = (Number.isInteger(configured) && configured > 0) ? configured : (this.lastPort || 36866);
+      const candidates = [first, 36866, 36867].filter((p, i, a) => a.indexOf(p) === i);
+      let tried = first, failed = null;
+      let conn = null;
+      let lastErr = null;
+      for (const port of candidates) {
+        if (this.badPort === port && candidates.length > 1) {
+          failed = port; // defer the known-bad port to the last slot
+          continue;
+        }
+        try {
+          conn = await this.terra.tcp.connect('{{setting:host}}', port, 5000);
+          this.lastPort = port;
+          break;
+        } catch (e) {
+          lastErr = e;
+          this.log('port ' + port + ': ' + ((e && e.message) || e));
+        }
+      }
+      if (failed !== null) {
+        try {
+          conn = await this.terra.tcp.connect('{{setting:host}}', failed, 5000);
+          this.lastPort = failed;
+        } catch (e) {
+          if (!conn) lastErr = e;
+        }
+      }
+      if (!conn) throw lastErr || new Error('no WFTNP port answered');
       this.conn = conn;
       this.buf = new Uint8Array(0);
       this._failPending('reconnecting');
-      this.log('tcp connected (' + conn + ') — ' + (s.host || '{{setting:host}}') + ':' + port);
+      this.log('tcp connected (' + conn + ') — WFTNP port ' + this.lastPort);
       await this.discover();
+      this.badPort = null;
       this.backoff = 2000;
       ok = true;
     } catch (e) {
       this.conn = null;
       this.buf = new Uint8Array(0);
       this._failPending('connect failed');
+      // Connected but the socket didn't speak WFTNP (e.g. it is the Zwift
+      // _zwift-protocol socket): prefer the other port next cycle.
+      if (this.lastPort && /discover|response code|timeout|not found/i.test((e && e.message) || '')) {
+        this.badPort = this.lastPort;
+        this.log('marking port ' + this.lastPort + ' as non-WFTNP; next cycle prefers ' + (this.lastPort === 36866 ? 36867 : 36866));
+      }
       this.log('not connected: ' + (e && e.message || e));
     } finally {
       this.connecting = false;
@@ -541,9 +590,30 @@ class WahooBridge {
 
   async write(wire, value) {
     const name = shortName(wire);
+    if (uuidEq(wire, WIRE_2AD9) && u8(value).length > 0) this._lastCpOpcode = u8(value)[0] & 0xff;
     this.log('→ kickr ' + name + ' [' + hex(value) + ']');
     const resp = await this.request(WFTNP.WRITE, concat(wire, value), 'write ' + name, 4000);
     if (resp && resp.length > 16) this._emitWriteExtras(wire, resp);
+  }
+
+  // FTMS control-point ack shaping. The game expects the status form
+  // [0x80, opcode, result] after every 2AD9 write (it checks for
+  // [0x80, 0x00, 0x01] before sending 0x11/0x05). On this Kickr the raw
+  // server→client ack has been observed as bare opcode byte(s) — the
+  // previous working bridge synthesized [0x80, payload[0], 0x01] exactly
+  // for this reason. Normalize either way: if the device already sends the
+  // [0x80, …] form pass it through; otherwise wrap its opcode (or the last
+  // opcode we wrote) into the success form.
+  shapeCpAck(value) {
+    const v = u8(value);
+    if (v.length >= 1 && v[0] === 0x80) return v;
+    const op = v.length > 0 ? v[0] : (this._lastCpOpcode === undefined ? 0 : this._lastCpOpcode);
+    return new Uint8Array([0x80, op & 0xff, 0x01]);
+  }
+
+  _emitControl(value) {
+    if (!this.onControl) return;
+    try { this.onControl(this.shapeCpAck(value)); } catch (e) { this.log('emit fail: ' + e.message); }
   }
 
   // Some Kickr firmware piggybacks a characteristic's new value inside the
@@ -554,13 +624,17 @@ class WahooBridge {
   // handshake completes even when it never arrives as a separate NOTIFY.
   _emitWriteExtras(wire, resp) {
     const extras = resp.slice(16);
+    if (uuidEq(wire, WIRE_2AD9)) {
+      this.log('⇢ kickr 2AD9 write response [' + hex(extras) + '] → presenting ' + hex(this.shapeCpAck(extras)));
+      this._emitControl(extras);
+      return;
+    }
     this.log('⇢ kickr write response ' + shortName(wire) + ' [' + hex(extras) + ']');
-    const cb = uuidEq(wire, WIRE_2AD9) ? this.onControl
-      : uuidEq(wire, WIRE_WIA) ? this.onWia
-        : uuidEq(wire, WIRE_2A63) ? this.onCps
-          : uuidEq(wire, WIRE_2AD2) ? this.onBikeData
-            : uuidEq(wire, WIRE_VS) ? this.onVs
-              : null;
+    const cb = uuidEq(wire, WIRE_WIA) ? this.onWia
+      : uuidEq(wire, WIRE_2A63) ? this.onCps
+        : uuidEq(wire, WIRE_2AD2) ? this.onBikeData
+          : uuidEq(wire, WIRE_VS) ? this.onVs
+            : null;
     if (cb) { try { cb(extras); } catch (e) { this.log('emit fail: ' + e.message); } }
   }
 
@@ -603,7 +677,7 @@ class WahooBridge {
       this.log('← kickr ' + shortName(wire) + ' [' + hex(value) + ']');
       if (uuidEq(wire, WIRE_2A63) && this.onCps) this.onCps(value);
       else if (uuidEq(wire, WIRE_2AD2) && this.onBikeData) this.onBikeData(value);
-      else if (uuidEq(wire, WIRE_2AD9) && this.onControl) this.onControl(value);
+      else if (uuidEq(wire, WIRE_2AD9) && this.onControl) this._emitControl(value);
       else if (uuidEq(wire, WIRE_WIA) && this.onWia) this.onWia(value);
       else if (uuidEq(wire, WIRE_VS) && this.onVs) this.onVs(value);
       else this.log('  (no handler for ' + shortName(wire) + ')');

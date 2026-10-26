@@ -18,8 +18,8 @@
       "key": "port",
       "label": "WFTNP port",
       "type": "number",
-      "default": 36867,
-      "description": "Kickr Wi-Fi (WFTNP) TCP port. Wahoo's spec default is 36866; recent Kickr Wi-Fi units are commonly observed on 36867. If the bridge can't connect, try the other value."
+      "default": 36866,
+      "description": "Kickr Wi-Fi (WFTNP) TCP port. A verified-working client for this exact Kickr used 36866 (Wahoo's spec default). The unit also advertises a separate _zwift-protocol socket, observed on 36867 — not WFTNP. If 36866 refuses, the bridge automatically falls back to 36867."
     }
   ]
 }
