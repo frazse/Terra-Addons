@@ -1,0 +1,25 @@
+{
+  "id": "wifi-trainer-bridge",
+  "name": "Wi-Fi Trainer Bridge",
+  "version": "2.0.0",
+  "description": "Drives a Wi-Fi Wahoo Kickr from Biketerra over the WFTNP protocol: feeds the trainer's real power & cadence into the game, and relays resistance control (erg / sim) to the Kickr. Host & port are configurable.",
+  "matches": ["https://biketerra.com/*"],
+  "enabled": true,
+  "js": ["main.js"],
+  "settings": [
+    {
+      "key": "host",
+      "label": "Kickr IP address",
+      "type": "text",
+      "default": "10.0.0.132",
+      "description": "The Wi-Fi IP address of the Kickr (shown in the Wahoo Fitness app, or via `avahi-browse _wahoo-fitness-tnp._tcp` on the same network)."
+    },
+    {
+      "key": "port",
+      "label": "WFTNP port",
+      "type": "number",
+      "default": 36867,
+      "description": "Kickr Wi-Fi (WFTNP) TCP port. Wahoo's spec default is 36866; recent Kickr Wi-Fi units are commonly observed on 36867. If the bridge can't connect, try the other value."
+    }
+  ]
+}
