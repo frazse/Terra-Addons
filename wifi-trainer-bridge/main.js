@@ -333,7 +333,16 @@ function buildMock(bridge) {
   vsChar._writeHandler = (b) => bridge.write(WIRE_VS, b);
   const vsSvc = new MockService(VS_SVC, [vsChar]);
 
-  return new MockDevice('KICKR Wi-Fi', [powerSvc, ftmsSvc, vsSvc]);
+  const device = new MockDevice('KICKR Wi-Fi', [powerSvc, ftmsSvc, vsSvc]);
+  // Rider left the game: treat it as end-of-session so the Kickr's
+  // single-controller slot is released cleanly (no power cycle needed).
+  const origDisconnect = device.gatt.disconnect;
+  device.gatt.disconnect = () => {
+    const r = origDisconnect();
+    try { bridge.onRiderDetach(); } catch (e) { bridge.log('detach hook: ' + (e && e.message || e)); }
+    return r;
+  };
+  return device;
 }
 
 // Wire Kickr notify callbacks to the mock's outbound notifications.
@@ -401,10 +410,12 @@ class WahooBridge {
     this.log = log;
     this.terra = null;
     this.conn = null;
+    this.alive = new Set(); // every conn id this bridge opened and has not reaped — frames from a retiring conn still resolve in-flight teardown requests
     this.buf = new Uint8Array(0);
     this.seq = 0;
     this.lastPort = null;
     this.badPort = null;
+    this.enabled = []; // wire UUIDs whose notifications we enabled — unsubscribed on clean teardown
     this._lastCpOpcode = undefined;
     this.pending = new Map(); // seq → {resolve, reject, timer, label}
     this.timer = null;
@@ -449,7 +460,7 @@ class WahooBridge {
       const configured = Math.round(Number(s.port));
       const first = (Number.isInteger(configured) && configured > 0) ? configured : (this.lastPort || 36866);
       const candidates = [first, 36866, 36867].filter((p, i, a) => a.indexOf(p) === i);
-      let tried = first, failed = null;
+      let failed = null;
       let conn = null;
       let lastErr = null;
       for (const port of candidates) {
@@ -476,6 +487,7 @@ class WahooBridge {
       }
       if (!conn) throw lastErr || new Error('no WFTNP port answered');
       this.conn = conn;
+      this.alive.add(conn);
       this.buf = new Uint8Array(0);
       this._failPending('reconnecting');
       this.log('tcp connected (' + conn + ') — WFTNP port ' + this.lastPort);
@@ -515,20 +527,72 @@ class WahooBridge {
   onLost(e) {
     this.log('connection lost: ' + ((e && (e.reason || e.state)) || 'closed') + (e && e.peer ? ' [' + e.peer + ']' : ''));
     this.conn = null;
+    if (e && e.conn) this.alive.delete(e.conn);
     this.buf = new Uint8Array(0);
     this._failPending('connection lost');
     if (this.stopping || this.connecting) return; // in-flight loop handles retry
     this.scheduleReconnect();
   }
 
-  restart(reason) {
+  // Clean WFTNP session teardown — the "proper disconnect" for Wahoo's
+  // single-controller model. WFTNP has no close-session message (types 1–6
+  // only), so a clean end is GATT etiquette in this order: unsubscribe every
+  // characteristic we enabled, then FTMS Control Release (CP 0x01 on 0x2AD9 —
+  // the exact call kilianyp's working client makes before closing the socket),
+  // then a clean TCP FIN (the Rust host documents EOF-on-close). Wahoo's own
+  // troubleshooting docs admit the control chip "may get stuck with a previous
+  // connection" and need a 30–35 s power cycle — that latch is what an unclean
+  // session end leaves behind, and this is how we stop tripping it.
+  async _teardown(conn, reason) {
+    if (!conn || !this.terra) return;
+    for (const wire of this.enabled) {
+      const name = shortName(wire);
+      try {
+        await this.request(WFTNP.ENABLE, concat(wire, [0x00]), 'unsubscribe ' + name, 1000, conn);
+        this.log('→ kickr unsubscribe ' + name + ' (' + reason + ')');
+      } catch (e) {
+        this.log(name + ' unsubscribe: ' + ((e && e.message) || e));
+      }
+    }
+    this.enabled = [];
+    try {
+      await this.request(WFTNP.WRITE, concat(WIRE_2AD9, [0x01]), 'control release', 1500, conn);
+      this.log('→ kickr 2AD9 [01] — control released (' + reason + ')');
+    } catch (e) {
+      this.log('control release: ' + ((e && e.message) || e) + ' (' + reason + ')');
+    }
+    this._failPending('session ended');
+    try { await this.terra.tcp.close(conn); } catch (e) { /* already gone */ }
+    this.alive.delete(conn);
+    this.log('session ended (' + reason + ')');
+  }
+
+  // The game dropped the rider (gatt.disconnect). Release the WFTNP session
+  // cleanly so the Kickr hands its controller slot back without a power cycle
+  // (the Wahoo app or the next ride can take it), then re-acquire so the
+  // bridge stays hot for the next pairing.
+  onRiderDetach() {
+    if (this.stopping) return;
+    const conn = this.conn;
+    this.conn = null;
+    if (!conn) return;
+    this.log('rider detached (' + conn + ') — releasing the session cleanly');
+    this._teardown(conn, 'rider detached').finally(() => {
+      if (!this.stopping) this.loop().catch((e) => this.log('reacquire: ' + ((e && e.message) || e)));
+    }).catch((e) => this.log('detach: ' + ((e && e.message) || e)));
+  }
+
+  async restart(reason) {
     this.log('restart (' + reason + ')');
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
-    const old = this.conn;
+    const conn = this.conn;
     this.conn = null;
     this._failPending('restart');
     this.backoff = 2000;
-    if (old && this.terra) this.terra.tcp.close(old).catch(() => {});
+    if (conn && this.terra) {
+      try { await this._teardown(conn, 'settings changed'); }
+      catch (e) { this.log('teardown: ' + (e && e.message || e)); }
+    }
     this.loop().catch((e) => this.log('restart: ' + (e && e.message || e)));
   }
 
@@ -536,9 +600,9 @@ class WahooBridge {
     this.stopping = true;
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
     this._failPending('addon stop');
-    const old = this.conn;
+    const conn = this.conn;
     this.conn = null;
-    if (old && this.terra) this.terra.tcp.close(old).catch(() => {});
+    if (conn && this.terra) this._teardown(conn, 'addon stop').catch((e) => this.log('stop: ' + (e && e.message || e)));
   }
 
   async discover() {
@@ -549,6 +613,7 @@ class WahooBridge {
       if (n > 0 && n < 0x4000) seen.push('0x' + n.toString(16));
     }
     this.log('services: ' + (seen.join(', ') || '(none 16-bit)'));
+    this.enabled = [];
     for (const [label, wire] of [
       ['2A63', WIRE_2A63],
       ['2AD9', WIRE_2AD9],
@@ -558,6 +623,7 @@ class WahooBridge {
     ]) {
       try {
         await this.request(WFTNP.ENABLE, concat(wire, [0x01]), 'enable ' + label, 3000);
+        this.enabled.push(wire);
       } catch (e) {
         this.log(label + ': ' + e.message); // missing char is fine — just unused
       }
@@ -565,9 +631,9 @@ class WahooBridge {
     this.log('ready — Kickr traffic will be relayed');
   }
 
-  request(type, data, label, timeoutMs = 4000) {
+  request(type, data, label, timeoutMs = 4000, connId) {
     if (!this.terra) return Promise.reject(new Error('bridge not started'));
-    const conn = this.conn;
+    const conn = connId || this.conn;
     if (!conn) return Promise.reject(new Error('not connected to Kickr'));
     const seq = (this.seq = (this.seq % 255) + 1);
     const p = new Promise((resolve, reject) => {
@@ -590,10 +656,31 @@ class WahooBridge {
 
   async write(wire, value) {
     const name = shortName(wire);
-    if (uuidEq(wire, WIRE_2AD9) && u8(value).length > 0) this._lastCpOpcode = u8(value)[0] & 0xff;
+    const v = u8(value);
+    if (uuidEq(wire, WIRE_2AD9) && v.length > 0) this._lastCpOpcode = v[0] & 0xff;
+    // FTMS Control Release — the game is done with the trainer this pass.
+    const isRelease = uuidEq(wire, WIRE_2AD9) && v.length === 1 && v[0] === 0x01;
     this.log('→ kickr ' + name + ' [' + hex(value) + ']');
-    const resp = await this.request(WFTNP.WRITE, concat(wire, value), 'write ' + name, 4000);
-    if (resp && resp.length > 16) this._emitWriteExtras(wire, resp);
+    try {
+      const resp = await this.request(WFTNP.WRITE, concat(wire, value), 'write ' + name, 4000);
+      if (resp && resp.length > 16) this._emitWriteExtras(wire, resp);
+    } finally {
+      // Recycle the WFTNP session either way: the device has seen the
+      // release (even if it answered an error code), and closing our TCP is
+      // what actually frees its single-session slot. Re-acquire right after
+      // so the bridge stays hot.
+      if (isRelease && !this.stopping) this._recycleRelease();
+    }
+  }
+
+  _recycleRelease() {
+    const conn = this.conn;
+    this.conn = null;
+    if (!conn) return;
+    this.log('session released by rider — recycling the WFTNP session');
+    this._teardown(conn, 'rider released control').finally(() => {
+      this.loop().catch((e) => this.log('reacquire: ' + ((e && e.message) || e)));
+    }).catch((e) => this.log('recycle: ' + ((e && e.message) || e)));
   }
 
   // FTMS control-point ack shaping. The game expects the status form
@@ -746,13 +833,15 @@ if (typeof navigator !== 'undefined' && navigator.bluetooth && typeof navigator.
     };
 
     terra.tcp.onFrame((e) => {
-      if (e && e.conn === bridge.conn) bridge.feed(e.bytes);
+      if (e && bridge.alive.has(e.conn)) bridge.feed(e.bytes);
     });
     terra.tcp.onState((e) => {
-      if (!e || e.conn !== bridge.conn) return;
+      if (!e) return;
+      if (bridge.alive.has(e.conn)) bridge.alive.delete(e.conn);
+      if (e.conn !== bridge.conn) return; // a retiring conn's close is handled by its own teardown
       if (e.state === 'closed' || e.state === 'error') bridge.onLost(e);
     });
-    terra.settings.onChange(() => bridge.restart('settings changed'));
+    terra.settings.onChange(() => bridge.restart('settings changed').catch(() => {}));
     terra.onCleanup(() => {
       bridge.log('stopping');
       bridge.stop();
@@ -765,6 +854,18 @@ if (typeof navigator !== 'undefined' && navigator.bluetooth && typeof navigator.
         }
       } catch (e) { /* page: restore failure is harmless */ }
     });
+    // Best-effort safety net for the hard app-quit path: pagehide fires just
+    // before the page goes away. Even a racy send of the release-before-close
+    // beats a bare socket death on the Kickr.
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('pagehide', () => {
+        const conn = bridge.conn;
+        if (conn && !bridge.stopping && bridge.terra) {
+          bridge.log('page unloading — releasing the WFTNP session');
+          bridge._teardown(conn, 'page unload').catch(() => {});
+        }
+      });
+    }
   })().catch((e) => {
     try { console.error('[wifi-trainer-bridge] boot failed:', e); } catch (err) { /* page */ }
   });
