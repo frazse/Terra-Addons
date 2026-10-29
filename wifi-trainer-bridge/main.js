@@ -815,6 +815,18 @@ class WahooBridge {
     }
     this.pending.clear();
   }
+
+  // Bluetooth names the platform must never hand to the game while we are
+  // the trainer. Setting `btExcludeNames` (comma-separated); defaults to the
+  // Kickr's factory BT name so the same physical unit isn't also auto-
+  // connected over Bluetooth — HR straps and the like stay pairable.
+  async btExcludeNames() {
+    try {
+      const s = (await this.terra.settings.all()) || {};
+      const raw = s.btExcludeNames === undefined ? 'KICKR' : String(s.btExcludeNames);
+      return raw.split(',').map((x) => x.trim()).filter(Boolean);
+    } catch (e) { return []; }
+  }
 }
 // ---------- boot: intercept pairing, wire the bridge ----------
 if (typeof navigator !== 'undefined' && navigator.bluetooth && typeof navigator.bluetooth.requestDevice === 'function') {
@@ -859,8 +871,18 @@ if (typeof navigator !== 'undefined' && navigator.bluetooth && typeof navigator.
         const exclusions = (options && options.exclusionFilters) || [];
         const mockExcluded = exclusions.some((f) => f && f.name === MOCK_NAME);
         if (mockExcluded) {
-          bridge.log('pairing request excludes ' + MOCK_NAME + ' — deferring to the platform chooser');
-          return origRequestDevice.apply(this, arguments);
+          // We ARE the trainer while the mock is paired (over Wi-Fi), so keep
+          // the physical unit's Bluetooth identity out of the platform's
+          // auto-pair and chooser — otherwise a remembered BT trainer snaps in
+          // beside us and the Kickr gets double-driven. HR straps, power
+          // meters and the rest stay fully pairable (they have other names).
+          const extra = (await bridge.btExcludeNames())
+            .filter((n) => !exclusions.some((f) => f && f.name === n))
+            .map((n) => ({ name: n }));
+          const merged = Object.assign({}, options, { exclusionFilters: exclusions.concat(extra) });
+          bridge.log('pairing request excludes ' + MOCK_NAME + ' — deferring to the platform chooser' +
+            (extra.length ? ' (keeping out of auto-pair: ' + extra.map((f) => f.name).join(', ') + ')' : ''));
+          return origRequestDevice.call(this, merged);
         }
         const d = ensureDevice();
         registerMock(d);
