@@ -26,7 +26,7 @@
       "label": "Bluetooth names to keep auto-pair away from",
       "type": "text",
       "default": "KICKR",
-      "description": "Comma-separated Bluetooth device names the platform must never hand to the game while this bridge is the trainer — they are excluded from the in-ride 'pair device' auto-pair and chooser. Defaults to the Kickr's factory BT name so the same physical unit isn't also connected over Bluetooth. Heart rate straps, power meters and anything else named differently are unaffected."
+      "description": "Comma-separated Bluetooth device names the platform must never offer or connect to the game while this bridge is the trainer. They are excluded from the in-ride 'pair device' auto-pair and chooser, and from Terra's pre-ride BLE auto-connect of remembered devices — so the same physical Kickr is not also connected over Bluetooth. Use the Kickr's exact BT name: a Kickr Core advertises as 'KICKR CORE xxxx' (see the Wahoo app or Terra's device list), a Kickr v1 as 'KICKR' (the default). Heart rate straps, power meters and anything else named differently are unaffected."
     }
   ]
 }
