@@ -54,6 +54,7 @@ const ZWIFT_MEAS = '00000002-19ca-4651-86e5-fa29dcdd09d1'; // zwiftMeasurement �
 const ZWIFT_CMDRESP = '00000004-19ca-4651-86e5-fa29dcdd09d1'; // zwiftCommandResponse
 const HR_SVC = base128(0x180d); // Heart Rate service (frontend serviceType `heartRate`)
 const CHR_HR = base128(0x2a37); // Heart Rate Measurement (frontend `heartRateMeasurement`)
+const MOCK_NAME = 'KICKR Wi-Fi'; // device name the mock presents itself as
 
 function normalizeUuid(v) {
   const s = String(v == null ? '' : v).toLowerCase();
@@ -352,7 +353,7 @@ function buildMock(bridge) {
   vsChar._writeHandler = (b) => bridge.write(WIRE_VS, b);
   const vsSvc = new MockService(VS_SVC, [zwiftMeas, vsChar, zwiftResp]);
 
-  const device = new MockDevice('KICKR Wi-Fi', [powerSvc, ftmsSvc, hrSvc, vsSvc]);
+  const device = new MockDevice(MOCK_NAME, [powerSvc, ftmsSvc, hrSvc, vsSvc]);
   // Rider left the game: treat it as end-of-session so the Kickr's
   // single-controller slot is released cleanly (no power cycle needed).
   const origDisconnect = device.gatt.disconnect;
@@ -848,6 +849,19 @@ if (typeof navigator !== 'undefined' && navigator.bluetooth && typeof navigator.
     const origRequestDevice = navigator.bluetooth.requestDevice;
     navigator.bluetooth.requestDevice = async function (options) {
       if (isTrainerRequest(options)) {
+        // The game hands every pairing request with its whole service registry
+        // as filters and puts the devices it ALREADY KNOWS in exclusionFilters.
+        // So when our mock is on the exclusion list this click is not "give me
+        // the trainer" (the game already has it) — it is "pair something else"
+        // (HR strap, a real trainer, …). Hand it to the platform chooser.
+        // When the mock is NOT excluded it is the trainer pairing → serve it
+        // one-tap, as always.
+        const exclusions = (options && options.exclusionFilters) || [];
+        const mockExcluded = exclusions.some((f) => f && f.name === MOCK_NAME);
+        if (mockExcluded) {
+          bridge.log('pairing request excludes ' + MOCK_NAME + ' — deferring to the platform chooser');
+          return origRequestDevice.apply(this, arguments);
+        }
         const d = ensureDevice();
         registerMock(d);
         if (d.gatt) d.gatt.connected = true; // rider connects next; bind early (realistic-gears etc.)
