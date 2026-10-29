@@ -49,7 +49,11 @@ const CHR_2AD9 = base128(0x2ad9); // FTMS Control Point
 const CHR_2ACC = base128(0x2acc); // FTMS Feature
 const CHR_WIA = 'a026e005-0a7d-4ab3-97fa-f1500f9feb8b'; // Wahoo WIA
 const VS_SVC = base128(0xfc82); // Zwift-style virtual shifting service (0xFC82)
-const ZWIFT_VS_CHAR = '00000003-19ca-4651-86e5-fa29dcdd09d1'; // gear-ratio char
+const ZWIFT_VS_CHAR = '00000003-19ca-4651-86e5-fa29dcdd09d1'; // gear-ratio char (zwiftControlPoint)
+const ZWIFT_MEAS = '00000002-19ca-4651-86e5-fa29dcdd09d1'; // zwiftMeasurement — its presence is what triggers the Devices-page "Controls" row
+const ZWIFT_CMDRESP = '00000004-19ca-4651-86e5-fa29dcdd09d1'; // zwiftCommandResponse
+const HR_SVC = base128(0x180d); // Heart Rate service (frontend serviceType `heartRate`)
+const CHR_HR = base128(0x2a37); // Heart Rate Measurement (frontend `heartRateMeasurement`)
 
 function normalizeUuid(v) {
   const s = String(v == null ? '' : v).toLowerCase();
@@ -222,11 +226,12 @@ function encodeBikeData(f = {}) {
   }
   return concat([flags & 0xff, (flags >> 8) & 0xff], ...body);
 }
-// Proven layout: [0x44 0x00, speed 2B (=0), cadence 2B (×½), power i16]
-const synthBikeData = (cadence, watts) => encodeBikeData({
+// Proven layout: [0x44 0x00 | 0x42 + flags, speed 2B (=0), cadence 2B (×½), power i16]
+const synthBikeData = (cadence, watts, heartRate = 0) => encodeBikeData({
   instantaneousSpeed: 0, // oddball field: present = bit 0 clear
   instantaneousCadence: Math.max(0, Math.round(cadence)),
   instantaneousPower: Math.max(-32768, Math.min(32767, Math.round(watts))),
+  ...(heartRate > 0 && { heartRate: Math.round(heartRate) }),
 });
 // ---------- mock GATT — the Web-BT API surface BikeTerra drives ----------
 const FULL_PROPS = {
@@ -326,14 +331,28 @@ function buildMock(bridge) {
   ]));
   const ftmsSvc = new MockService(FTMS_SVC, [bikeData, ftmsCp, ftmsFeature]);
 
-  // Zwift-style virtual shifting (0xFC82): the gear-ratio char is write-only
+  // Heart Rate (0x180D/2A37): the game's heart-rate driver keys off this
+  // characteristic being live (it subscribes to notify and succeeds on our
+  // mock, just like for 2AD2). Value flows in from the Kickr's own 2AD2
+  // heartRate field when a chest strap feeds the Kickr; a bare pair (no HR
+  // source) still shows the row, greyed — exactly what a standalone trainer
+  // looks like to the game.
+  const hrChar = new MockCharacteristic(CHR_HR, ['notify'], new Uint8Array([0x00, 0x00]));
+  const hrSvc = new MockService(HR_SVC, [hrChar]);
+
+  // Zwift-style virtual shifting (0xFC82): the gear-ratio CP is write-only
   // (Write Without Response on a real Zwift-connected trainer); realistic-gears
   // and the game push raw packet bytes here, which we relay to the Kickr.
+  // zwiftMeasurement + zwiftCommandResponse complete the set a Zwift-connected
+  // trainer exposes — the Devices-page "Controls" row is keyed on
+  // zwiftMeasurement being live.
+  const zwiftMeas = new MockCharacteristic(ZWIFT_MEAS, ['notify'], new Uint8Array(0));
+  const zwiftResp = new MockCharacteristic(ZWIFT_CMDRESP, ['notify'], new Uint8Array(0));
   const vsChar = new MockCharacteristic(ZWIFT_VS_CHAR, ['write', 'writeWithoutResponse']);
   vsChar._writeHandler = (b) => bridge.write(WIRE_VS, b);
-  const vsSvc = new MockService(VS_SVC, [vsChar]);
+  const vsSvc = new MockService(VS_SVC, [zwiftMeas, vsChar, zwiftResp]);
 
-  const device = new MockDevice('KICKR Wi-Fi', [powerSvc, ftmsSvc, vsSvc]);
+  const device = new MockDevice('KICKR Wi-Fi', [powerSvc, ftmsSvc, hrSvc, vsSvc]);
   // Rider left the game: treat it as end-of-session so the Kickr's
   // single-controller slot is released cleanly (no power cycle needed).
   const origDisconnect = device.gatt.disconnect;
@@ -359,6 +378,7 @@ function wireBridge(bridge, device) {
   const bikeData = find(CHR_2AD2);
   const ftmsCp = find(CHR_2AD9);
   const vsChar = find(ZWIFT_VS_CHAR);
+  const hrChar = find(CHR_HR);
 
   // 2A63: keep real power + run the game's cadence algorithm, then publish.
   bridge.onCps = (value) => {
@@ -370,7 +390,7 @@ function wireBridge(bridge, device) {
     const watts = typeof d.instantaneousPower === 'number' ? d.instantaneousPower : bridge.lastWatts;
     if (Date.now() - bridge.lastRealBikeData > 2500) {
       // Kickr isn't streaming its own 2AD2 — synthesize one.
-      if (bikeData) bikeData._notify(synthBikeData(bridge.lastCadence, watts));
+      if (bikeData) bikeData._notify(synthBikeData(bridge.lastCadence, watts, bridge.lastHeartRate));
     }
     if (powerChar) powerChar._notify(value);
     bridge.log('ride ' + Math.round(watts) + 'W ' + Math.round(bridge.lastCadence) + 'rpm');
@@ -383,6 +403,11 @@ function wireBridge(bridge, device) {
     try { d = P(dv(u8(value)), KE); } catch (e) { /* unparseable — still relay raw */ }
     if (typeof d.cadence === 'number' && d.cadence > 0) bridge.lastCadence = d.cadence;
     if (typeof d.power === 'number') bridge.lastWatts = d.power;
+    if (typeof d.heartRate === 'number' && d.heartRate > 0) {
+      // Mirror the Kickr's HR (standard 0x2A37 layout: flags byte, then 1-byte HR).
+      bridge.lastHeartRate = Math.round(d.heartRate);
+      if (hrChar) hrChar._notify(new Uint8Array([0x00, bridge.lastHeartRate & 0xff]));
+    }
     if (bikeData) bikeData._notify(value);
   };
 
@@ -398,7 +423,7 @@ function isTrainerRequest(options) {
     if (!f || !f.services) continue;
     for (const s of f.services) {
       const id = normalizeUuid(s);
-      if (id === FTMS_SVC || id === POWER_SVC || id === SPD_SVC || id === VS_SVC) return true;
+      if (id === FTMS_SVC || id === POWER_SVC || id === SPD_SVC || id === VS_SVC || id === HR_SVC) return true;
     }
   }
   return false;
@@ -425,6 +450,7 @@ class WahooBridge {
     this.cadenceMeter = new CadenceMeter();
     this.lastCadence = 0;
     this.lastWatts = 0;
+    this.lastHeartRate = 0;
     this.lastRealBikeData = 0;
     this._resyncLogged = false;
     this.onCps = null;
@@ -876,7 +902,9 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     u8, dv, hex, concat,
     base128, normalizeUuid,
-    POWER_SVC, FTMS_SVC, SPD_SVC, VS_SVC, CHR_2A63, CHR_2AD2, CHR_2AD9, CHR_2ACC, CHR_WIA, ZWIFT_VS_CHAR,
+    POWER_SVC, FTMS_SVC, SPD_SVC, VS_SVC, HR_SVC,
+    CHR_2A63, CHR_2AD2, CHR_2AD9, CHR_2ACC, CHR_WIA, CHR_HR,
+    ZWIFT_VS_CHAR, ZWIFT_MEAS, ZWIFT_CMDRESP,
     wireUuid16, WIRE_2A63, WIRE_2AD2, WIRE_2AD9, WIRE_WIA, WIRE_VS, uuidEq, shortName,
     WFTNP, WFTNP_RESP, wftnp,
     N, P, ZE, KE, CadenceMeter,
