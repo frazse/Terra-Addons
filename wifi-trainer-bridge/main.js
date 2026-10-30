@@ -446,6 +446,9 @@ class WahooBridge {
     this.pending = new Map(); // seq → {resolve, reject, timer, label}
     this.timer = null;
     this.backoff = 2000;
+    this._nextReconnectMs = null; // one-shot delay override (kickr session-release grace)
+    this._lastDataLog = 0;
+    this._dataSuppressed = 0;
     this.stopping = false;
     this.connecting = false;
     this.cadenceMeter = new CadenceMeter();
@@ -541,9 +544,19 @@ class WahooBridge {
 
   scheduleReconnect() {
     if (this.timer || this.stopping) return;
-    const delay = this.backoff;
-    this.backoff = Math.min(this.backoff * 2, 15000);
-    this.log('retry in ' + delay + 'ms');
+    // A voluntary release (rider saved the ride / detached) sets a one-shot
+    // override: the Kickr must get a quiet window to hand its single session
+    // slot back before we SYN it again — hammering it during that release
+    // window is what trips the 30–35 s control-chip latch. Boot, lost-link,
+    // and failure retries keep plain exponential backoff.
+    let delay = this.backoff;
+    if (this._nextReconnectMs != null) {
+      delay = this._nextReconnectMs;
+      this._nextReconnectMs = null;
+    } else {
+      this.backoff = Math.min(this.backoff * 2, 15000);
+    }
+    this.log('retry in ' + (delay / 1000) + 's' + (delay >= 8000 ? ' (kickr session-release grace)' : ''));
     this.timer = setTimeout(() => {
       this.timer = null;
       if (!this.stopping) this.loop().catch(() => {});
@@ -604,9 +617,12 @@ class WahooBridge {
     this.conn = null;
     if (!conn) return;
     this.log('rider detached (' + conn + ') — releasing the session cleanly');
-    this._teardown(conn, 'rider detached').finally(() => {
-      if (!this.stopping) this.loop().catch((e) => this.log('reacquire: ' + ((e && e.message) || e)));
-    }).catch((e) => this.log('detach: ' + ((e && e.message) || e)));
+    // Give the Kickr a quiet window to free its single session slot before
+    // the re-acquire SYN lands — scheduled now (before teardown) so it holds
+    // even if onLost fires during the tcp.close and schedules a retry first.
+    this._nextReconnectMs = 8000;
+    this.scheduleReconnect();
+    this._teardown(conn, 'rider detached').catch((e) => this.log('detach: ' + ((e && e.message) || e)));
   }
 
   async restart(reason) {
@@ -619,6 +635,10 @@ class WahooBridge {
     if (conn && this.terra) {
       try { await this._teardown(conn, 'settings changed'); }
       catch (e) { this.log('teardown: ' + (e && e.message || e)); }
+      // We just released a session — hold the first re-acquire for the box.
+      this._nextReconnectMs = 8000;
+      this.scheduleReconnect();
+      return;
     }
     this.loop().catch((e) => this.log('restart: ' + (e && e.message || e)));
   }
@@ -705,9 +725,12 @@ class WahooBridge {
     this.conn = null;
     if (!conn) return;
     this.log('session released by rider — recycling the WFTNP session');
-    this._teardown(conn, 'rider released control').finally(() => {
-      this.loop().catch((e) => this.log('reacquire: ' + ((e && e.message) || e)));
-    }).catch((e) => this.log('recycle: ' + ((e && e.message) || e)));
+    // Same grace as onRiderDetach: let the Kickr free its session slot before
+    // the re-acquire SYN lands (see scheduleReconnect). Scheduled before
+    // teardown so it wins even if onLost schedules a retry during the close.
+    this._nextReconnectMs = 8000;
+    this.scheduleReconnect();
+    this._teardown(conn, 'rider released control').catch((e) => this.log('recycle: ' + ((e && e.message) || e)));
   }
 
   // FTMS control-point ack shaping. The game expects the status form
@@ -755,6 +778,16 @@ class WahooBridge {
   feed(bytes) {
     if (u8(bytes).length === 0) return;
     this.buf = concat(this.buf, bytes);
+    // Hard cap: if the stream ever desyncs badly (garbage framing, runaway
+    // header), a partial "frame" would otherwise accumulate forever and the
+    // per-byte resync slice would get quadratic. Reset and let the request
+    // layer's error handling take over; the re-acquire loop brings us back.
+    if (this.buf.length > 65536) {
+      this.log('stream resync: ' + this.buf.length + ' bytes buffered without a complete frame — resetting');
+      this.buf = new Uint8Array(0);
+      this._failPending('stream desync');
+      return;
+    }
     let guard = 0;
     while (this.buf.length >= 6 && guard++ < 1024) {
       if (this.buf[0] !== 0x01) {
@@ -779,6 +812,26 @@ class WahooBridge {
     }
   }
 
+  // High-frequency data frames (~10 Hz CPS + bike data per ride) would drown
+  // the devtools console over a long ride — tens of thousands of console
+  // lines accumulate per hour, and that pressure (preserve-log on) is what
+  // froze the page at ~30 min. Log at most one data frame per second and
+  // fold the suppressed count into it, so the stream stays visible.
+  _logData(line) {
+    const now = Date.now();
+    if (this._lastDataLog && now - this._lastDataLog < 1000) {
+      this._dataSuppressed++;
+      return;
+    }
+    this._lastDataLog = now;
+    if (this._dataSuppressed > 0) {
+      this.log(line + '  (+' + this._dataSuppressed + ' suppressed)');
+      this._dataSuppressed = 0;
+    } else {
+      this.log(line);
+    }
+  }
+
   handleFrame(f) {
     const type = f[1];
     const seq = f[2];
@@ -788,7 +841,7 @@ class WahooBridge {
     if (type === WFTNP.NOTIFY) {
       const wire = data.slice(0, 16);
       const value = data.slice(16);
-      this.log('← kickr ' + shortName(wire) + ' [' + hex(value) + ']');
+      this._logData('← kickr ' + shortName(wire) + ' [' + hex(value) + ']');
       if (uuidEq(wire, WIRE_2A63) && this.onCps) this.onCps(value);
       else if (uuidEq(wire, WIRE_2AD2) && this.onBikeData) this.onBikeData(value);
       else if (uuidEq(wire, WIRE_2AD9) && this.onControl) this._emitControl(value);
