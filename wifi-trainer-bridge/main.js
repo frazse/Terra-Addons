@@ -550,13 +550,15 @@ class WahooBridge {
     // window is what trips the 30–35 s control-chip latch. Boot, lost-link,
     // and failure retries keep plain exponential backoff.
     let delay = this.backoff;
+    let grace = false;
     if (this._nextReconnectMs != null) {
       delay = this._nextReconnectMs;
       this._nextReconnectMs = null;
+      grace = true;
     } else {
       this.backoff = Math.min(this.backoff * 2, 15000);
     }
-    this.log('retry in ' + (delay / 1000) + 's' + (delay >= 8000 ? ' (kickr session-release grace)' : ''));
+    this.log('retry in ' + (delay / 1000) + 's' + (grace ? ' (kickr session-release grace)' : ''));
     this.timer = setTimeout(() => {
       this.timer = null;
       if (!this.stopping) this.loop().catch(() => {});
