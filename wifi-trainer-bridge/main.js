@@ -18,10 +18,10 @@
 
 // ---------- byte helpers ----------
 const u8 = (v) => ArrayBuffer.isView(v)
-  ? new Uint8Array(v.buffer, v.byteOffset, v.byteLength)
-  : v instanceof ArrayBuffer
-    ? new Uint8Array(v)
-    : Uint8Array.from(v);
+? new Uint8Array(v.buffer, v.byteOffset, v.byteLength)
+: v instanceof ArrayBuffer
+? new Uint8Array(v)
+: Uint8Array.from(v);
 const dv = (a) => new DataView(a.buffer, a.byteOffset, a.byteLength);
 const hex = (a) => {
   a = u8(a);
@@ -77,12 +77,12 @@ const uuidEq = (a, b) => {
   return x.length === 16 && y.length === 16 && x.every((c, i) => c === y[i]);
 };
 const shortName = (wire) =>
-  uuidEq(wire, WIRE_2A63) ? '2A63'
-    : uuidEq(wire, WIRE_2AD2) ? '2AD2'
-      : uuidEq(wire, WIRE_2AD9) ? '2AD9'
-        : uuidEq(wire, WIRE_WIA) ? 'a026e005'
-          : uuidEq(wire, WIRE_VS) ? 'fc82-vs'
-            : hex(wire);
+uuidEq(wire, WIRE_2A63) ? '2A63'
+: uuidEq(wire, WIRE_2AD2) ? '2AD2'
+: uuidEq(wire, WIRE_2AD9) ? '2AD9'
+: uuidEq(wire, WIRE_WIA) ? 'a026e005'
+: uuidEq(wire, WIRE_VS) ? 'fc82-vs'
+: hex(wire);
 
 // ---------- WFTNP framing: [0x01, type, seq, respCode, dataLen BE16, data…] ----------
 // The fixed header is 6 bytes: Optional Data starts at offset 6. Confirmed by
@@ -231,8 +231,8 @@ function encodeBikeData(f = {}) {
 const synthBikeData = (cadence, watts, heartRate = 0) => encodeBikeData({
   instantaneousSpeed: 0, // oddball field: present = bit 0 clear
   instantaneousCadence: Math.max(0, Math.round(cadence)),
-  instantaneousPower: Math.max(-32768, Math.min(32767, Math.round(watts))),
-  ...(heartRate > 0 && { heartRate: Math.round(heartRate) }),
+                                                                        instantaneousPower: Math.max(-32768, Math.min(32767, Math.round(watts))),
+                                                                        ...(heartRate > 0 && { heartRate: Math.round(heartRate) }),
 });
 // ---------- mock GATT — the Web-BT API surface BikeTerra drives ----------
 const FULL_PROPS = {
@@ -247,8 +247,8 @@ const props = (keys) => {
 };
 const notFound = (what) => {
   const e = typeof DOMException === 'function'
-    ? new DOMException(what + ' not found', 'NotFoundError')
-    : Object.assign(new Error(what + ' not found'), { name: 'NotFoundError' });
+  ? new DOMException(what + ' not found', 'NotFoundError')
+  : Object.assign(new Error(what + ' not found'), { name: 'NotFoundError' });
   return e;
 };
 
@@ -412,9 +412,9 @@ function wireBridge(bridge, device) {
     if (bikeData) bikeData._notify(value);
   };
 
-  bridge.onControl = (value) => { if (ftmsCp) ftmsCp._notify(value); };
-  bridge.onWia = (value) => { if (wiaChar) wiaChar._notify(value); };
-  bridge.onVs = (value) => { if (vsChar) vsChar._notify(value); };
+    bridge.onControl = (value) => { if (ftmsCp) ftmsCp._notify(value); };
+    bridge.onWia = (value) => { if (wiaChar) wiaChar._notify(value); };
+    bridge.onVs = (value) => { if (vsChar) vsChar._notify(value); };
 }
 
 // Is this a requestDevice call asking for a trainer?
@@ -485,13 +485,13 @@ class WahooBridge {
     if (this.connecting || this.stopping) return;
     this.connecting = true;
     let ok = false;
+    let conn = null; // hoisted so the catch below can close a socket that never became a WFTNP session
     try {
       const s = (await this.terra.settings.all()) || {};
       const configured = Math.round(Number(s.port));
       const first = (Number.isInteger(configured) && configured > 0) ? configured : (this.lastPort || 36866);
       const candidates = [first, 36866, 36867].filter((p, i, a) => a.indexOf(p) === i);
       let failed = null;
-      let conn = null;
       let lastErr = null;
       for (const port of candidates) {
         if (this.badPort === port && candidates.length > 1) {
@@ -526,6 +526,10 @@ class WahooBridge {
       this.backoff = 2000;
       ok = true;
     } catch (e) {
+      if (conn) { // connected, but never became a WFTNP session
+        this.alive.delete(conn);
+        try { Promise.resolve(this.terra.tcp.close(conn)).catch(() => {}); } catch (_) {}
+      }
       this.conn = null;
       this.buf = new Uint8Array(0);
       this._failPending('connect failed');
@@ -627,6 +631,16 @@ class WahooBridge {
     this._teardown(conn, 'rider detached').catch((e) => this.log('detach: ' + ((e && e.message) || e)));
   }
 
+  // Unload-safe close: no awaits, no waiting for replies. Send control release,
+  // then close in the same tick (TCP keeps the order, so the Kickr sees 0x01 before the FIN).
+  _fastClose(conn) {
+    if (!conn || !this.terra) return;
+    const seq = (this.seq = (this.seq % 255) + 1);
+    try { this.terra.tcp.send(conn, wftnp(WFTNP.WRITE, seq, 0, concat(WIRE_2AD9, [0x01]))).catch(() => {}); } catch (_) {}
+    try { Promise.resolve(this.terra.tcp.close(conn)).catch(() => {}); } catch (_) {}
+    this.alive.delete(conn);
+  }
+
   async restart(reason) {
     this.log('restart (' + reason + ')');
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
@@ -651,7 +665,7 @@ class WahooBridge {
     this._failPending('addon stop');
     const conn = this.conn;
     this.conn = null;
-    if (conn && this.terra) this._teardown(conn, 'addon stop').catch((e) => this.log('stop: ' + (e && e.message || e)));
+    if (conn && this.terra) this._fastClose(conn);
   }
 
   async discover() {
@@ -770,10 +784,10 @@ class WahooBridge {
     }
     this.log('⇢ kickr write response ' + shortName(wire) + ' [' + hex(extras) + ']');
     const cb = uuidEq(wire, WIRE_WIA) ? this.onWia
-      : uuidEq(wire, WIRE_2A63) ? this.onCps
-        : uuidEq(wire, WIRE_2AD2) ? this.onBikeData
-          : uuidEq(wire, WIRE_VS) ? this.onVs
-            : null;
+    : uuidEq(wire, WIRE_2A63) ? this.onCps
+    : uuidEq(wire, WIRE_2AD2) ? this.onBikeData
+    : uuidEq(wire, WIRE_VS) ? this.onVs
+    : null;
     if (cb) { try { cb(extras); } catch (e) { this.log('emit fail: ' + e.message); } }
   }
 
@@ -932,19 +946,19 @@ if (typeof navigator !== 'undefined' && navigator.bluetooth && typeof navigator.
           // beside us and the Kickr gets double-driven. HR straps, power
           // meters and the rest stay fully pairable (they have other names).
           const extra = (await bridge.btExcludeNames())
-            .filter((n) => !exclusions.some((f) => f && f.name === n))
-            .map((n) => ({ name: n }));
+          .filter((n) => !exclusions.some((f) => f && f.name === n))
+          .map((n) => ({ name: n }));
           const merged = Object.assign({}, options, { exclusionFilters: exclusions.concat(extra) });
           bridge.log('pairing request excludes ' + MOCK_NAME + ' — deferring to the platform chooser' +
-            (extra.length ? ' (keeping out of auto-pair: ' + extra.map((f) => f.name).join(', ') + ')' : ''));
+          (extra.length ? ' (keeping out of auto-pair: ' + extra.map((f) => f.name).join(', ') + ')' : ''));
           return origRequestDevice.call(this, merged);
         }
         const d = ensureDevice();
         registerMock(d);
         if (d.gatt) d.gatt.connected = true; // rider connects next; bind early (realistic-gears etc.)
-        try { if (typeof window !== 'undefined' && window.__terraSettled) window.__terraSettled(true); } catch (e) { /* noop */ }
-        bridge.log('pairing rider with the Wi-Fi Kickr mock (' + d.name + ')');
-        return d;
+  try { if (typeof window !== 'undefined' && window.__terraSettled) window.__terraSettled(true); } catch (e) { /* noop */ }
+  bridge.log('pairing rider with the Wi-Fi Kickr mock (' + d.name + ')');
+  return d;
       }
       return origRequestDevice.apply(this, arguments);
     };
@@ -952,37 +966,38 @@ if (typeof navigator !== 'undefined' && navigator.bluetooth && typeof navigator.
     terra.tcp.onFrame((e) => {
       if (e && bridge.alive.has(e.conn)) bridge.feed(e.bytes);
     });
-    terra.tcp.onState((e) => {
-      if (!e) return;
-      if (bridge.alive.has(e.conn)) bridge.alive.delete(e.conn);
-      if (e.conn !== bridge.conn) return; // a retiring conn's close is handled by its own teardown
-      if (e.state === 'closed' || e.state === 'error') bridge.onLost(e);
-    });
-    terra.settings.onChange(() => bridge.restart('settings changed').catch(() => {}));
-    terra.onCleanup(() => {
-      bridge.log('stopping');
-      bridge.stop();
-      if (device && core && core.devices) {
-        try { core.devices.delete(device.id); } catch (e) { /* page */ }
-      }
-      try {
-        if (navigator.bluetooth.requestDevice !== origRequestDevice) {
-          navigator.bluetooth.requestDevice = origRequestDevice;
-        }
-      } catch (e) { /* page: restore failure is harmless */ }
-    });
-    // Best-effort safety net for the hard app-quit path: pagehide fires just
-    // before the page goes away. Even a racy send of the release-before-close
-    // beats a bare socket death on the Kickr.
-    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-      window.addEventListener('pagehide', () => {
-        const conn = bridge.conn;
-        if (conn && !bridge.stopping && bridge.terra) {
-          bridge.log('page unloading — releasing the WFTNP session');
-          bridge._teardown(conn, 'page unload').catch(() => {});
-        }
+      terra.tcp.onState((e) => {
+        if (!e) return;
+        if (bridge.alive.has(e.conn)) bridge.alive.delete(e.conn);
+        if (e.conn !== bridge.conn) return; // a retiring conn's close is handled by its own teardown
+        if (e.state === 'closed' || e.state === 'error') bridge.onLost(e);
       });
-    }
+        terra.settings.onChange(() => bridge.restart('settings changed').catch(() => {}));
+        terra.onCleanup(() => {
+          bridge.log('stopping');
+          bridge.stop();
+          if (device && core && core.devices) {
+            try { core.devices.delete(device.id); } catch (e) { /* page */ }
+          }
+          try {
+            if (navigator.bluetooth.requestDevice !== origRequestDevice) {
+              navigator.bluetooth.requestDevice = origRequestDevice;
+            }
+          } catch (e) { /* page: restore failure is harmless */ }
+        });
+        // Best-effort safety net for the hard app-quit path: pagehide fires just
+        // before the page goes away. Even a racy send of the release-before-close
+        // beats a bare socket death on the Kickr.
+        if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+          window.addEventListener('pagehide', () => {
+            const conn = bridge.conn;
+            if (conn && !bridge.stopping && bridge.terra) {
+              bridge.log('page unloading — releasing the WFTNP session');
+              bridge.conn = null;
+              bridge._fastClose(conn);
+            }
+          });
+        }
   })().catch((e) => {
     try { console.error('[wifi-trainer-bridge] boot failed:', e); } catch (err) { /* page */ }
   });
