@@ -1,0 +1,20 @@
+{
+  "id": "discord-rich-presence",
+  "name": "Discord Rich Presence",
+  "version": "0.3.0",
+  "description": "Show what you're doing on Biketerra on your Discord profile: your ride (route/event, distance, elapsed time), spectating, or the page you're on (dashboard/results). Uses the Terra core to talk to Discord desktop directly — no sidecar. Needs a Discord application Client ID and the Discord desktop client running on the same machine (Linux).",
+  "matches": ["https://biketerra.com*"],
+  "js": ["main.js"],
+  "enabled": false,
+  "settings": [
+    { "key": "clientId", "label": "Discord application Client ID", "type": "text",
+      "description": "discord.com/developers/applications > your app > General Information > Client ID. Create the app (free, no OAuth needed) to be able to show custom presence." },
+    { "key": "imageKey", "label": "Large image key", "type": "text", "default": "bike",
+      "description": "Optional key of an image uploaded under Rich Presence > Assets in your app. Leave it blank (or use a key you haven't uploaded) and Discord falls back to your app's icon." },
+    { "key": "updateSeconds", "label": "Update interval (seconds)", "type": "number", "default": 20,
+      "description": "How often presence updates may be pushed. Keep it >= 15 to stay clear of Discord's rate limits." },
+    { "key": "showButton", "label": "Show a 'biketerra.com' button", "type": "checkbox", "default": true },
+    { "key": "showIdle", "label": "Show idle presence (dashboard, results, …)", "type": "checkbox", "default": true,
+      "description": "When not riding or spectating, show the Biketerra page you're on (e.g. 'On dashboard', 'Browsing routes', 'Viewing results'). Turn off for ride/spectate presence only." }
+  ]
+}
