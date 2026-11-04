@@ -67,8 +67,11 @@ function placePill() {
     pill.classList.remove('btz-in-header');
     if (pill.parentElement !== document.body) document.body.append(pill);
     if (pillWrap) pillWrap.remove();
-    // No header on ride pages: the floating pill would sit on top of Biketerra's stats, so hide it there.
-    pill.style.display = mode === 'ride' ? 'none' : '';
+    // No header on ride/spectate pages: the floating pill would sit on top of
+    // Biketerra's stats, so hide it there (the panel stays reachable from any
+    // page that has the nav header, e.g. the dashboard).
+    pill.style.display =
+      mode === 'ride' || location.pathname.startsWith(SPECTATE_PATH_PREFIX) ? 'none' : '';
   }
 }
 

@@ -1,12 +1,12 @@
 .btz-focus { outline: none !important; }
 #btz-ring { position: fixed; z-index: 2147483646; pointer-events: none; display: none; box-sizing: border-box; border: 3px solid #ff6b57; }
 #btz-pill { position: fixed; left: 12px; bottom: 12px; z-index: 2147483647; display: inline-flex; align-items: center;
-  font: 12px system-ui, sans-serif; padding: 6px 10px; border: 0; border-radius: 999px; background: #222; color: #fff;
-  opacity: .65; cursor: pointer; user-select: none; }
+font: 12px system-ui, sans-serif; padding: 6px 10px; border: 0; border-radius: 999px; background: #222; color: #fff;
+opacity: .65; cursor: pointer; user-select: none; }
 #btz-pill:hover { opacity: 1; }
 /* in Biketerra's nav row */
 #btz-pill.btz-in-header { position: static; margin-left: 10px; font: inherit; font-size: .9em; padding: .4em .9em;
-  background: rgba(255,255,255,.16); color: rgba(255,255,255,.92); opacity: 1; z-index: auto; vertical-align: middle; white-space: nowrap; }
+background: rgba(255,255,255,.16); color: rgba(255,255,255,.92); opacity: 1; z-index: auto; vertical-align: middle; white-space: nowrap; }
 #btz-pill.btz-in-header:hover { background: rgba(255,255,255,.26); }
 .btz-pill-wrap { list-style: none; display: inline-flex; align-items: center; }
 .btz-dot { width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; background: #888; flex: none; }
@@ -14,8 +14,8 @@
 .btz-dot.wait { background: #fbbf24; }
 
 #btz-panel { display: none; position: fixed; top: 12px; right: 12px; bottom: 12px; width: 470px; z-index: 2147483647; overflow: auto;
-  box-sizing: border-box; padding: 14px 16px; border-radius: 12px; background: #15151a; color: #eee;
-  font: 14px system-ui, sans-serif; box-shadow: 0 10px 40px rgba(0,0,0,.6); }
+box-sizing: border-box; padding: 14px 16px; border-radius: 12px; background: #15151a; color: #eee;
+font: 14px system-ui, sans-serif; box-shadow: 0 10px 40px rgba(0,0,0,.6); }
 #btz-panel.open { display: block; }
 #btz-panel button, #btz-panel select { font: inherit; border-radius: 6px; border: 0; cursor: pointer; }
 #btz-panel h3 { margin: 0; display: inline-block; }
@@ -35,7 +35,7 @@
 #btz-panel .btz-x:hover { color: #fff; }
 /* Biketerra styles <select> itself (white background): force readable colours */
 #btz-panel select { padding: 4px 6px; appearance: auto; color-scheme: dark;
-  background-color: #2a2a33 !important; color: #eee !important; border: 1px solid #3a3a44 !important; }
+background-color: #2a2a33 !important; color: #eee !important; border: 1px solid #3a3a44 !important; }
 #btz-panel option { background-color: #2a2a33; color: #eee; }
 #btz-panel .btz-toggle { display: block; margin-top: 12px; font-weight: 600; cursor: pointer; }
 #btz-panel .btz-toggle input { margin-right: 6px; vertical-align: middle; }
@@ -57,3 +57,276 @@
 #btz-panel .btz-tab { padding: 5px 12px; background: #2a2a33; color: #bbb; }
 #btz-panel .btz-tab.active { background: #ff6b57; color: #fff; }
 #btz-panel .btz-slot.btz-inherit { opacity: .5; font-style: italic; }
+
+/* ========== Console UI Overhaul v4 (Centered 3-Equal-Col Dashboard & Full-Bleed Header/Footer) ========== */
+
+/*html.btz-page-dash body,
+html.btz-page-routes body,
+html.btz-page-route-detail body,
+html.btz-page-events body,
+html.btz-page-event-detail body {
+  padding-bottom: 72px !important;
+} */
+
+/* Only widen .main .wrap so the top navbar (.header) and bottom (.footer) stay 100% full-bleed */
+.main .wrap.btz-wide-container,
+html.btz-page-dash .main > .content > .wrap,
+html.btz-page-routes .main > .content > .wrap,
+html.btz-page-route-detail .main > .content > .wrap,
+html.btz-page-events .main > .content > .wrap,
+html.btz-page-event-detail .main > .content > .wrap {
+  max-width: 96vw !important;
+  width: 96vw !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+  box-sizing: border-box !important;
+}
+
+/* --- 1. DASHBOARD: 3 EQUAL COLUMNS (33% EACH OF 96VW) --- */
+.btz-dash-root-3col {
+  max-width: 100% !important;
+  width: 100% !important;
+  margin: 0 auto !important;
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  column-gap: 24px !important;
+  row-gap: 16px !important;
+  align-items: start !important;
+}
+
+/* Row 1: "Welcome back, Josef" + live rider pill */
+.btz-dash-header {
+  grid-column: 1 / -1 !important;
+  grid-row: 1 !important;
+  margin: 0 0 4px 0 !important;
+}
+
+/* Row 2: All 3 columns start at the exact same vertical level */
+.btz-dash-col-events,
+.btz-dash-col-stats,
+.btz-dash-col-community {
+  grid-row: 2 !important;
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+  min-width: 0 !important;
+}
+.btz-dash-col-events { grid-column: 1 !important; }
+.btz-dash-col-stats {
+  grid-column: 2 !important;
+  /* Push the white "LAST 2 WEEKS" card down by the height of the "COMING UP" / "COMMUNITY" eyebrow heading (~25px)
+   so the top edges of the white cards in all 3 columns line up *horizontally! */
+  margin-top: 25px !important;
+}
+.btz-dash-col-community { grid-column: 3 !important; }
+
+/* Remove any extra top margin on the "COMING UP" and "COMMUNITY" eyebrow labels */
+.btz-dash-col-events > .zone-head,
+.btz-dash-col-community > .zone-head {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+}
+
+/* Stack "People I'm following" feed and "WEEK OF NOV 2" changelog at 100% width inside Column 3 */
+.btz-dash-col-community > .grid.community {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  gap: 14px !important;
+}
+.btz-dash-col-community > .grid.community > *,
+.btz-dash-col-community .news-card {
+  width: 100% !important;
+  max-width: 100% !important;
+  flex: none !important;
+  box-sizing: border-box !important;
+}
+/* Pull "People I'm following" sub-label onto the top-right of the Community column header */
+.btz-dash-col-community {
+  position: relative !important;
+}
+.btz-dash-col-community .filter-row {
+  position: absolute !important;
+  top: 0 !important;
+  right: 0 !important;
+  margin: 0 !important;
+}
+
+.btz-dash-event-row {
+  transition: transform 0.12s ease, box-shadow 0.12s ease !important;
+  border-radius: 12px !important;
+}
+
+@media (max-width: 1200px) {
+  .btz-dash-root-3col {
+    grid-template-columns: 1fr !important;
+  }
+  .btz-dash-col-events,
+  .btz-dash-col-stats,
+  .btz-dash-col-community {
+    grid-column: 1 !important;
+    grid-row: auto !important;
+    margin-top: 0 !important;
+  }
+}
+
+/* --- 2. ROUTES PAGE (/routes) — 4-COLUMN WIDESCREEN GRID --- */
+.btz-routes-grid {
+  display: grid !important;
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  gap: 18px !important;
+}
+@media (max-width: 1200px) {
+  .btz-routes-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+}
+.btz-route-card-item {
+  transition: transform 0.14s ease, box-shadow 0.14s ease !important;
+}
+
+/* --- 3. EVENTS PAGE (/events) — 2-COLUMN WIDESCREEN CARDS --- */
+.btz-events-page-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 14px !important;
+  align-items: stretch !important;
+}
+.btz-events-date-header {
+  grid-column: 1 / -1 !important;
+  margin-top: 8px !important;
+  margin-bottom: 2px !important;
+}
+.btz-events-page-card {
+  background: #fff !important;
+  padding: 12px 14px !important;
+  border-radius: 14px !important;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04) !important;
+  border: 1px solid rgba(0, 0, 0, 0.06) !important;
+  transition: transform 0.14s ease, box-shadow 0.14s ease !important;
+  margin: 0 !important;
+}
+html.btz-page-events .facets {
+  margin-bottom: 0.5rem !important;
+}
+
+/* --- 4. ROUTE & EVENT DETAIL COCKPIT (/routes/:id, /events/:id) --- */
+.btz-detail-cockpit-grid {
+  max-width: 100% !important;
+  width: 100% !important;
+  margin: 0 auto !important;
+  display: grid !important;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.25fr) !important;
+  column-gap: 28px !important;
+  row-gap: 16px !important;
+  align-items: start !important;
+}
+.btz-cockpit-header {
+  grid-column: 1 / -1 !important;
+}
+.btz-cockpit-left {
+  grid-column: 1 !important;
+  min-width: 0;
+}
+.btz-cockpit-right {
+  grid-column: 2 !important;
+  grid-row: 2 / span 6 !important;
+  min-width: 0;
+}
+@media (max-width: 1024px) {
+  .btz-detail-cockpit-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .btz-cockpit-left,
+  .btz-cockpit-right {
+    grid-column: 1 !important;
+    grid-row: auto !important;
+  }
+}
+
+.btz-cta-hero {
+  position: relative;
+  font-size: 1.15em !important;
+  font-weight: 800 !important;
+  padding: 14px 28px !important;
+  border-radius: 12px !important;
+  box-shadow: 0 8px 24px rgba(255, 107, 87, 0.4) !important;
+  transform: scale(1.03);
+}
+.btz-cta-hero::after {
+  content: "A";
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 10px;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: #22c55e;
+  color: #052e16;
+  font-weight: 900;
+  font-size: 13px;
+}
+
+/* --- 5. TACTILE CONTROLLER FOCUS & SELECTION RING --- */
+.btz-card-focused,
+.btz-route-card-item:has(.btz-focus) {
+  transform: translateY(-2px) scale(1.015) !important;
+  box-shadow: 0 10px 26px rgba(255, 107, 87, 0.24) !important;
+  z-index: 5;
+}
+
+#btz-ring {
+border: 3.5px solid #ff6b57 !important;
+box-shadow: 0 0 0 4px rgba(255, 107, 87, 0.25), 0 8px 24px rgba(0, 0, 0, 0.2) !important;
+transition: left 0.08s ease-out, top 0.08s ease-out, width 0.08s ease-out, height 0.08s ease-out !important;
+}
+
+/* --- 6. BOTTOM CONSOLE HUD BAR --- */
+#btz-console-hud {
+position: fixed;
+left: 50%;
+bottom: 64px;
+transform: translateX(-50%);
+z-index: 2147483645;
+display: flex;
+align-items: center;
+gap: 20px;
+padding: 10px 22px;
+border-radius: 999px;
+background: rgba(20, 20, 26, 0.94);
+backdrop-filter: blur(10px);
+color: #f4f4f5;
+font: 13px system-ui, -apple-system, sans-serif;
+box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.12);
+pointer-events: none;
+white-space: nowrap;
+}
+#btz-console-hud .btz-hud-target {
+font-weight: 700;
+color: #ffb4a8;
+padding-right: 16px;
+border-right: 1px solid rgba(255, 255, 255, 0.15);
+max-width: 260px;
+overflow: hidden;
+text-overflow: ellipsis;
+}
+#btz-console-hud .btz-hud-keys {
+display: flex;
+align-items: center;
+gap: 14px;
+}
+#btz-console-hud kbd {
+display: inline-block;
+padding: 2px 7px;
+margin-right: 4px;
+border-radius: 5px;
+background: #32323e;
+color: #fff;
+font: 800 11px system-ui, sans-serif;
+}
+#btz-console-hud kbd.btz-k-a { background: #22c55e; color: #052e16; }
+#btz-console-hud kbd.btz-k-b { background: #ec4899; color: #fff; }
+#btz-console-hud kbd.btz-k-y { background: #3b82f6; color: #fff; }
+#btz-console-hud kbd.btz-k-z { background: #f97316; color: #fff; }

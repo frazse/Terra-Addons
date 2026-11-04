@@ -6,6 +6,7 @@
 const SVC = '0000fc82-0000-1000-8000-00805f9b34fb';
 const ANALOG_ON = 30, ANALOG_OFF = 15; // lever thresholds (hysteresis), applied per direction
 const RIDE_PATH_PREFIX = '/ride';
+const SPECTATE_PATH_PREFIX = '/spectate';
 const DEBUG = false;                   // verbose terminal logging
 
 // Active-low: bit == 0 means pressed. Verified on a real Ride by pressing every button.
