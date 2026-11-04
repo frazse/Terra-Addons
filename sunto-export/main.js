@@ -12,19 +12,25 @@
         return btoa(s);
     };
 
+    function stripAffixes(s) {
+        let out = String(s).trim();
+        let next;
+        do {
+            next = out.replace(/^(Biketerra|Rowterra)\s*-\s*/i, '');
+            out = next;
+        } while (next !== out);
+        return out.trim();
+    }
+
     function getFormattedActivityName(rawTitleOverride = null) {
         const prefix = exportMode === 'ROW' ? 'Rowterra' : 'Biketerra';
-        const inputVal = rawTitleOverride || document.querySelector('.editable-title')?.value?.trim();
+        const inputVal = (rawTitleOverride || document.querySelector('.editable-title')?.value || '').trim();
         if (inputVal) {
-            const stripped = inputVal.replace(/^(Biketerra|Rowterra)\s*-\s*/i, '');
-            return `${prefix} - ${stripped}`;
+            return `${prefix} - ${stripAffixes(inputVal)}`;
         }
 
-        const rawTitle = document.title || '';
-        const cleaned = rawTitle
-        .replace(/^Activity\s*-\s*/i, '')
-        .replace(/\s*-\s*Biketerra$/i, '')
-        .trim();
+        let cleaned = (document.title || '').replace(/^Activity\s*-\s*/i, '').trim();
+        cleaned = stripAffixes(cleaned).replace(/\s*-\s*Biketerra$/i, '').trim();
 
         if (cleaned && cleaned.toLowerCase() !== 'biketerra') {
             return `${prefix} - ${cleaned}`;
@@ -32,60 +38,6 @@
 
         return `${prefix} - Virtual Workout`;
     }
-
-    // --- 0. EXTRACT STRAVA TOKEN FROM BIKETERRA PAGE HTML ---
-    function parseStravaAuthFromHtml(html) {
-        const blockMatch = html.match(/strava\s*:\s*\{([^}]+)\}/);
-        if (!blockMatch) return null;
-        const block = blockMatch[1];
-    const tokenMatch = block.match(/access_token\s*:\s*"([^"]+)"/);
-    const expMatch = block.match(/expires_at\s*:\s*(\d+)/);
-    if (!tokenMatch) return null;
-    return {
-        accessToken: tokenMatch[1],
-        expiresAt: expMatch ? parseInt(expMatch[1], 10) : 0
-    };
-}
-
-async function getFreshStravaToken(originalBodyStr) {
-    let auth = parseStravaAuthFromHtml(document.documentElement.innerHTML);
-    const nowSec = Math.floor(Date.now() / 1000);
-
-    if (auth && auth.accessToken) {
-        terra.log(`[Suunto Export] Found Strava token in HTML (expires_at=${auth.expiresAt}, now=${nowSec})`);
-        const testRes = await terra.http.request({
-            method: 'GET',
-            url: 'https://www.strava.com/api/v3/athlete',
-            headers: { 'Authorization': `Bearer ${auth.accessToken}` }
-        });
-        if (testRes.status === 200) {
-            return auth.accessToken;
-        }
-        terra.log(`[Suunto Export] Token in HTML returned HTTP ${testRes.status}; triggering Biketerra server token refresh...`);
-    }
-
-    try {
-        const minimalPayload = JSON.parse(originalBodyStr);
-        minimalPayload.activity = { ftp: 300, weight: 75000, keys: ['timestamp'], rows: [], events: [] };
-        await origFetch('https://biketerra.com/activities/service-upload', {
-            method: 'POST',
-            headers: { 'Content-Type': 'text/plain' },
-            body: JSON.stringify(minimalPayload),
-                        credentials: 'include'
-        });
-    } catch (_) {}
-
-    const pageRes = await origFetch(window.location.href, { credentials: 'include', cache: 'no-store' });
-    const freshHtml = await pageRes.text();
-    auth = parseStravaAuthFromHtml(freshHtml);
-
-    if (!auth || !auth.accessToken) {
-        throw new Error('Could not extract refreshed Strava token from Biketerra page HTML.');
-    }
-
-    terra.log(`[Suunto Export] Extracted refreshed Strava token (expires_at=${auth.expiresAt})`);
-    return auth.accessToken;
-}
 
 // --- 1. FIT DECODER: OVERLAYS CUSTOM .FIT METRICS ONTO BIKETERRA'S VALID ACTIVITY JSON ---
 function decodeFitToBiketerraActivity(fitBytes, baseActivity = {}) {
@@ -230,56 +182,6 @@ window.fetch = async function (...args) {
         try {
             const payload = JSON.parse(opts.body);
             const shouldSwap = !!customFitBytes || exportMode === 'ROW';
-
-            if (payload.service === 'strava' && shouldSwap) {
-                terra.log('[Suunto Export] Intercepting Strava upload for direct Rowing FIT upload...');
-                const accessToken = await getFreshStravaToken(opts.body);
-
-                const newTitle = getFormattedActivityName(payload.title);
-                const isRowing = exportMode === 'ROW';
-                let fitBytesToUpload = customFitBytes;
-                let filename = customFitName || `${newTitle.replace(/[\\/:*?"<>|]/g, '-')}.fit`;
-
-                if (!fitBytesToUpload) {
-                    const pageSummary = scrapePageSummary();
-                    fitBytesToUpload = encodeBiketerraJsonToFIT(payload.activity, pageSummary, newTitle, isRowing);
-                }
-
-                const sportType = isRowing ? 'VirtualRow' : 'VirtualRide';
-                const stravaRes = await terra.http.request({
-                    method: 'POST',
-                    url: 'https://www.strava.com/api/v3/uploads',
-                    headers: {
-                        'Authorization': `Bearer ${accessToken}`
-                    },
-                    form: {
-                        fields: {
-                            data_type: 'fit',
-                            name: newTitle,
-                            sport_type: sportType,
-                            commute: '0'
-                        },
-                        file: {
-                            field: 'file',
-                            filename,
-                            contentType: 'application/octet-stream',
-                            base64: b64(fitBytesToUpload)
-                        }
-                    }
-                });
-
-                terra.log(`[Suunto Export] Direct Strava API response (HTTP ${stravaRes.status}): ${stravaRes.body}`);
-
-                if (stravaRes.status >= 200 && stravaRes.status < 300) {
-                    const msgObj = JSON.parse(stravaRes.body || '{}');
-                    return new Response(JSON.stringify({ ok: true, msg: msgObj }), {
-                        status: 200,
-                        headers: { 'Content-Type': 'application/json' }
-                    });
-                } else {
-                    throw new Error(`Strava direct upload failed (HTTP ${stravaRes.status}): ${stravaRes.body}`);
-                }
-            }
 
             if (shouldSwap) {
                 payload.title = getFormattedActivityName(payload.title);
@@ -1102,6 +1004,7 @@ function injectExportControls() {
         rowBtn.style.color = !isRide ? '#000' : '#ccc';
         fitRow.style.display = (!isRide || customFitBytes) ? 'flex' : 'none';
         updateHijackBadges();
+        try { terra.storage.set('suuntoExportMode', m); } catch (_) {}
     };
 
     rideBtn.addEventListener('click', () => setMode('RIDE'));
@@ -1181,6 +1084,13 @@ function injectExportControls() {
     } else {
         container.appendChild(btn);
     }
+
+    // Restore the persisted sport mode so ROW doesn't silently revert to the RIDE default on reload.
+    try {
+        terra.storage.get('suuntoExportMode', 'RIDE').then(m => {
+            if (m === 'ROW' || m === 'RIDE') setMode(m);
+        }).catch(() => {});
+    } catch (_) {}
 }
 
 const observer = new MutationObserver(() => injectExportControls());
