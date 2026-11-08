@@ -1,0 +1,9 @@
+{
+  "id": "nameplates",
+  "name": "Rider Nameplates",
+  "version": "0.1.0",
+  "description": "Floating screen-space nameplates above all riders (ego + bots).",
+  "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
+  "js": ["main.js"],
+  "css": ["style.css"]
+}

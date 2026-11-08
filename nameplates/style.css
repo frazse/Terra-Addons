@@ -1,0 +1,50 @@
+/* nameplates — floating screen-space labels above every rider.
+ *
+ * `.nameplates-ov` is a fixed, full-viewport, pointer-events-none overlay.
+ * Each plate (`.np`) is positioned via
+ *     translate3d(sx, sy, 0) translate(-50%, -100%) scale(s)
+ * so its *bottom-centre* sits at the anchor point (sx, sy) and the label
+ * body extends *upward* above the rider.
+ */
+
+.nameplates-ov {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 2147483645;
+  /* the game's default typeface, with a system fallback */
+  font-family: "Overpass", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.np {
+  position: absolute;
+  top: 0;
+  left: 0;
+  margin: 0;
+  padding: 3px 8px;
+  border-radius: 6px;
+
+  background: rgba(15, 23, 42, 0.82);   /* dark slate (bots)   */
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+
+  will-change: transform;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  display: none;
+}
+
+.np-focal {
+  /* the rider you're currently riding as / spectating */
+  background: rgba(220, 38, 38, 0.90);
+  color: #ffffff;
+}
