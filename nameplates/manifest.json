@@ -1,9 +1,33 @@
 {
   "id": "nameplates",
   "name": "Rider Nameplates",
-  "version": "0.1.0",
-  "description": "Floating screen-space nameplates above all riders (ego + bots).",
+  "version": "0.2.0",
+  "description": "Floating screen-space nameplates above all riders (ego + bots), fully customizable in the cog menu.",
   "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
   "js": ["main.js"],
-  "css": ["style.css"]
+  "css": ["style.css"],
+  "settings": [
+    { "key": "nameFormat", "label": "Name format", "type": "select", "default": "full",
+      "options": ["full", "short", "last"],
+      "description": "full = First Last · short = first name · last = last name" },
+    { "key": "showEgo", "label": "Show focal rider (you)", "type": "checkbox", "default": true },
+    { "key": "fontSize", "label": "Font size (px)", "type": "number", "default": 12,
+      "description": "6 – 40 px" },
+    { "key": "colorMode", "label": "Plate color mode", "type": "select", "default": "custom",
+      "options": ["custom", "random", "helmet"],
+      "description": "custom = fixed colors below · random = stable per rider · helmet = each rider's helmet color" },
+    { "key": "plateColor", "label": "Other riders' plate color", "type": "color", "default": "#0f172a" },
+    { "key": "egoPlateColor", "label": "Focal rider's plate color", "type": "color", "default": "#dc2626" },
+    { "key": "showPower", "label": "Show power (W)", "type": "checkbox", "default": true },
+    { "key": "showWkg", "label": "Show W/kg", "type": "checkbox", "default": true },
+    { "key": "showSpeed", "label": "Show speed (km/h)", "type": "checkbox", "default": false },
+    { "key": "showCadence", "label": "Show cadence (rpm)", "type": "checkbox", "default": false },
+    { "key": "showHeart", "label": "Show heart rate (bpm)", "type": "checkbox", "default": false },
+    { "key": "showGap", "label": "Show gap (+s)", "type": "checkbox", "default": false },
+    { "key": "showLap", "label": "Show lap number", "type": "checkbox", "default": false },
+    { "key": "plateHeight", "label": "Plate height above rider (m)", "type": "number", "default": 1.9 },
+    { "key": "maxDist", "label": "Max distance for other riders (m)", "type": "number", "default": 100,
+      "description": "0 = unlimited" },
+    { "key": "bgOpacity", "label": "Background opacity (%)", "type": "number", "default": 82 }
+  ]
 }

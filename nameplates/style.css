@@ -22,13 +22,13 @@
   top: 0;
   left: 0;
   margin: 0;
-  padding: 3px 8px;
-  border-radius: 6px;
+  padding: 0.28em 0.67em;      /* em: scales with the font-size setting */
+  border-radius: 0.5em;
 
-  background: rgba(15, 23, 42, 0.82);   /* dark slate (bots)   */
+  background: rgba(15, 23, 42, 0.82);   /* dark slate (bots); overridden per plate at runtime */
   color: #ffffff;
   font-weight: 700;
-  font-size: 12px;
+  font-size: 1em;                 /* inherits the overlay's live font-size setting */
   line-height: 1.3;
   letter-spacing: 0.01em;
   white-space: nowrap;
@@ -44,7 +44,39 @@
 }
 
 .np-focal {
-  /* the rider you're currently riding as / spectating */
+  /* the rider you're currently riding as / spectating; overridden per plate at runtime */
   background: rgba(220, 38, 38, 0.90);
   color: #ffffff;
 }
+
+/* Live sample in the cog menu's settings preview slot (Terra renders this into a
+   plain container, so pin it down instead of the game's absolute positioning). */
+.np-sample {
+  position: static;
+  display: inline-block;
+  margin: 0 8px 8px 0;
+  transform: none;
+}
+
+/* ⚙ settings shortcut — ride pages have no header, so a small floating button.
+   z-index sits just under the nameplate overlay and far below the Terra modal. */
+.np-chip {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 2147483644;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid #3a3a44;
+  border-radius: 50%;
+  background: rgba(21, 21, 26, 0.88);
+  color: #c9c9d1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.np-chip:hover { color: #ffffff; border-color: #55555f; }
