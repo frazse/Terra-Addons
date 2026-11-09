@@ -76,7 +76,7 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  backdrop-filter: blur(6px);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  /* NOTE: no backdrop-filter here — it breaks the game's GPU on the Vulkan ANGLE stack */
 }
 .np-chip:hover { color: #ffffff; border-color: #55555f; }

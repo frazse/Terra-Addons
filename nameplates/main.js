@@ -185,22 +185,42 @@
 
   function helmetRgb(r, id, isFocal) {
     const rc = appRef && appRef.riderController;
-    if (!rc) return null;
     const pick = (o) => o && o.design && rgbFromHex(o.design.helmet_color);
-    if (isFocal && pick(rc.focalRider)) return pick(rc.focalRider);
+    // 1) The rider object itself — bots, other humans, and focal alike carry
+    //    their own design on the rider struct; this is the one to trust.
+    const own = pick(r);
+    if (own) return own;
+    if (!rc) return null;
+    // 2) The focal slot (r can predate rc.focalRider at hand-over).
+    if (isFocal) { const p = pick(rc.focalRider); if (p) return p; }
+    // 3) The human feed (other live humans keyed by id).
     if (rc.humanFeed && rc.humanFeed.humans) {
       const e = rc.humanFeed.humans[id] || rc.humanFeed.humans[String(id)];
       const p = pick(e);
       if (p) return p;
     }
-    const pe = pick(rc.ego);
-    if (pe) return pe;
+    // Deliberate: NO ego fallback — that is what painted every bot with the
+    // focal rider's helmet color. resolveRgb() falls back to the custom
+    // plate colors instead, which reads as "no helmet color available".
     return null;
   }
 
-  const customRgb = isFocal => rgbFromHex(isFocal ? S.egoPlateColor : S.plateColor) || [0, 0, 0];
+  let colorCache = null; // parsed custom colors, keyed by the values (avoids re-parsing per frame)
+  const customRgb = (isFocal) => {
+    const key = (S.plateColor || '') + '|' + (S.egoPlateColor || '');
+    if (!colorCache || colorCache.key !== key) {
+      colorCache = { key, ego: rgbFromHex(S.egoPlateColor) || [0, 0, 0], bot: rgbFromHex(S.plateColor) || [0, 0, 0] };
+    }
+    return isFocal ? colorCache.ego : colorCache.bot;
+  };
+  const hashCache = new Map(); // rider seed -> [r,g,b] (stable per rider, so stable too)
   const resolveRgb = (id, isFocal, r) => {
-    if (S.colorMode === 'random') return hashRgb(id);
+    if (S.colorMode === 'random') {
+      const k = String(id);
+      let h = hashCache.get(k);
+      if (!h) { h = hashRgb(id); hashCache.set(k, h); }
+      return h;
+    }
     if (S.colorMode === 'helmet') { const h = helmetRgb(r, id, isFocal); if (h) return h; }
     return customRgb(isFocal);
   };
@@ -211,21 +231,24 @@
   function labelText(name, st, r) {
     const parts = [];
     const sim = (r && r.sim) || {};
-    const pwr = (Number.isFinite(+sim.power) && +sim.power > 0)
-      ? +sim.power
-      : (st && Number.isFinite(+st.power) && +st.power > 0 ? +st.power : 0);
-    if (S.showPower && pwr > 0) parts.push(fmtInt(pwr) + ' W');
-    if (S.showWkg && pwr > 0) {
+    // A stat is "available" when it is present and finite — deliberately
+    // INCLUDING 0 (stopped at the lights: 0 W / 0 rpm should still show).
+    // Stats that are unreported (absent / not a number) stay hidden.
+    const avail = (v) => v != null && Number.isFinite(+v);
+    const pwr = avail(sim.power) ? +sim.power
+            : (st && avail(st.power) ? +st.power : null);
+    if (S.showPower && pwr != null) parts.push(fmtInt(pwr) + ' W');
+    if (S.showWkg && pwr != null) {
       const massG = (r && r.config && r.config.mass) || (r && r.userData && r.userData.weight) || 75000;
-      const w = (st && Number.isFinite(+st.wkg) && +st.wkg > 0) ? +st.wkg : (pwr * 1000) / massG;
+      const w = (st && avail(st.wkg)) ? +st.wkg : (pwr * 1000) / massG;
       parts.push('(' + fmt1(w) + ' W/kg)');
     }
     if (st) {
-      if (S.showSpeed   && +st.speed     > 0)  parts.push(fmt1(st.speed)   + ' km/h');
-      if (S.showCadence && +st.cadence   > 0)  parts.push(fmtInt(st.cadence)   + ' rpm');
-      if (S.showHeart   && +st.heartRate > 0)  parts.push(fmtInt(st.heartRate) + ' bpm');
-      if (S.showGap     && +st.gap       >= 0.05) parts.push('+' + fmt1(st.gap) + ' s');
-      if (S.showLap     && +st.lapCount  > 0)  parts.push('Lap ' + fmtInt(st.lapCount));
+      if (S.showSpeed   && avail(st.speed))     parts.push(fmt1(st.speed)   + ' km/h');
+      if (S.showCadence && avail(st.cadence))   parts.push(fmtInt(st.cadence)   + ' rpm');
+      if (S.showHeart   && avail(st.heartRate)) parts.push(fmtInt(st.heartRate) + ' bpm');
+      if (S.showGap     && avail(st.gap))       parts.push('+' + fmt1(st.gap) + ' s');
+      if (S.showLap     && avail(st.lapCount))  parts.push('Lap ' + fmtInt(st.lapCount));
     }
     return parts.length ? name + '  •  ' + parts.join('  •  ') : name;
   }
@@ -233,7 +256,7 @@
   /* ── live preview in the cog menu ──────────────────────────────────────────── */
   const SAMPLE = { power: 210, wkg: 2.8, speed: 37.4, cadence: 88, heartRate: 152, gap: 12.4, lapCount: 8 };
   function paintPreview(slot) {
-    if (!slot) return; // hidden — nothing to tear down (static sample, no timers)
+    if (!slot) { log('preview: hidden (slot=null)'); return; } // nothing to tear down (static sample, no timers)
     const mk = (name, rgb) => {
       const el = document.createElement('div');
       el.className = 'np np-sample';
@@ -248,6 +271,7 @@
       slot.replaceChildren(mk('Josef Nilsson', customRgb(true)), mk('Alex Kim', customRgb(false)));
     };
     paintNow();
+    log('preview painted: ' + slot.children.length + ' sample(s)');
     // The UI fires this the instant a save lands, but our cached copy of the
     // settings may still be resolving — repaint once with the server's value.
     try { terra.settings.all().then(applyS).then(paintNow).catch(() => {}); } catch (e) {}
@@ -279,6 +303,7 @@
   /* ── render loop (installed via addFeature) ───────────────────────────────── */
   function makeFeature(app) {
     const rc = () => app && app.riderController;
+    let diagDone = false;
 
     return {
       frame(frameState) {
@@ -313,6 +338,25 @@
         const drop = el => { if (el && el.parentNode) el.remove(); };
         const focalPos = (focal && focal.sim) ? focal.sim.midPosition : null;
 
+        /* One-shot: log the real helmet/design shapes from a live ride so the
+           helmet-color path can be verified (remove once helmet mode is confirmed). */
+        if (!diagDone && list.length) {
+          diagDone = true;
+          const tryLog = (m) => { try { log(m); } catch (e) {} };
+          const shape = (o) => {
+            try {
+              if (!o) return 'none';
+              return o.design ? ('design.helmet_color = ' + String(o.design.helmet_color)) : 'no .design';
+            } catch (e) { return 'unreadable'; }
+          };
+          const f0 = list.find(x => x.focal);
+          const b0 = list.find(x => !x.focal);
+          tryLog('diag helmet — focal: ' + shape(f0 && f0.r)
+            + ' | bot: ' + (b0 ? shape(b0.r) : 'no bot in list')
+            + ' | rc.humanFeed: ' + (R.humanFeed ? (R.humanFeed.humans ? 'humans:' + Object.keys(R.humanFeed.humans).length : 'present, no .humans') : 'absent'));
+          if (b0) tryLog('diag bot rider keys: ' + Object.keys(b0.r).join(',') + (b0.r.design ? ' | design keys: ' + Object.keys(b0.r.design).join(',') : ''));
+        }
+
         for (const { r, focal: isFocal } of list) {
           const sim = r.sim;
           if (sim.curLod === 0) continue;               // game has culled this rider
@@ -340,7 +384,7 @@
           const ry = sim.midPosition.y + lift;
           const rz = sim.midPosition.z - oz;
           const w  = vp[3] * rx + vp[7] * ry + vp[11] * rz + vp[15];
-          const el = plates.get(id);
+          let el = plates.get(id);   // NOTE: `let` — reassigned on lazy plate creation below
           if (w <= NEAR_W || !Number.isFinite(w)) { if (el) el.style.display = 'none'; continue; }
           const iw = 1 / w;
           const nx = (vp[0] * rx + vp[4] * ry + vp[8] * rz  + vp[12]) * iw;
@@ -396,7 +440,7 @@
     for (const el of plates.values()) { if (el.parentNode) el.remove(); }
     plates.clear();
     lastActive.clear();
-    statsBy.clear();
+    statsById.clear();
     if (ov.parentNode) ov.remove();
     if (chip.parentNode) chip.remove();
     for (const k of ['__nameplates']) { try { delete window[k]; } catch (e) {} }
