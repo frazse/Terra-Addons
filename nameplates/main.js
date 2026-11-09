@@ -303,7 +303,6 @@
   /* ── render loop (installed via addFeature) ───────────────────────────────── */
   function makeFeature(app) {
     const rc = () => app && app.riderController;
-    let diagDone = false;
 
     return {
       frame(frameState) {
@@ -337,25 +336,6 @@
         const active = new Set();
         const drop = el => { if (el && el.parentNode) el.remove(); };
         const focalPos = (focal && focal.sim) ? focal.sim.midPosition : null;
-
-        /* One-shot: log the real helmet/design shapes from a live ride so the
-           helmet-color path can be verified (remove once helmet mode is confirmed). */
-        if (!diagDone && list.length) {
-          diagDone = true;
-          const tryLog = (m) => { try { log(m); } catch (e) {} };
-          const shape = (o) => {
-            try {
-              if (!o) return 'none';
-              return o.design ? ('design.helmet_color = ' + String(o.design.helmet_color)) : 'no .design';
-            } catch (e) { return 'unreadable'; }
-          };
-          const f0 = list.find(x => x.focal);
-          const b0 = list.find(x => !x.focal);
-          tryLog('diag helmet — focal: ' + shape(f0 && f0.r)
-            + ' | bot: ' + (b0 ? shape(b0.r) : 'no bot in list')
-            + ' | rc.humanFeed: ' + (R.humanFeed ? (R.humanFeed.humans ? 'humans:' + Object.keys(R.humanFeed.humans).length : 'present, no .humans') : 'absent'));
-          if (b0) tryLog('diag bot rider keys: ' + Object.keys(b0.r).join(',') + (b0.r.design ? ' | design keys: ' + Object.keys(b0.r.design).join(',') : ''));
-        }
 
         for (const { r, focal: isFocal } of list) {
           const sim = r.sim;
