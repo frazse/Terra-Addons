@@ -1,0 +1,97 @@
+/* route-sign — one billboard sign anchored at a point along the route.
+ *
+ * `.routesign-ov` is a fixed, full-viewport, pointer-events-none overlay.
+ * The sign (`.rs`) is positioned via
+ *     translate3d(sx, sy, 0) translate(-50%, -100%) scale(s)
+ * so its *bottom-centre* sits at the anchor point (sx, sy) — the world point at
+ * the configured height above the road — and the panel body extends *upward*,
+ * with a small pointer triangle (`.rs::after`) marking the exact road spot.
+ */
+
+.routesign-ov {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 2147483645;
+  /* the game's default typeface, with a system fallback */
+  font-family: "Overpass", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.rs {
+  position: absolute;
+  top: 0;
+  left: 0;
+  margin: 0;
+  padding: 0.34em 0.8em;     /* em: scales with the font-size setting */
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 0.4em;
+
+  background: rgba(13, 59, 46, 0.92);  /* dark sign-green; overridden per instance at runtime */
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 1em;
+  line-height: 1.3;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  text-align: center;
+
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+
+  will-change: transform;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  display: none;
+}
+
+/* A tiny downward pointer at the sign's bottom-centre marks the exact road spot,
+   matching the panel body colour (set via --rs-bg at runtime). */
+.rs::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  transform: translateX(-50%);
+  border: 0.5em solid transparent;
+  border-top-color: var(--rs-bg, rgba(13, 59, 46, 0.92));
+}
+
+/* Live sample in the cog menu's settings preview slot (Terra renders this into a
+   plain container, so pin it down instead of the game's absolute positioning). */
+.rs-sample {
+  position: static;
+  display: inline-block;
+  margin: 0 10px 10px 0;
+  transform: none;
+}
+.rs-sample::after {
+  bottom: 100%;      /* in the preview the sign reads as a top-anchored sign: point up */
+  top: auto;
+  transform: translateX(-50%) rotate(180deg);
+}
+
+/* ⚙ settings shortcut — ride pages have no header, so a small floating button.
+   Bottom-LEFT so it never collides with nameplates' bottom-right chip.
+   z-index sits just under the sign overlay and far below the Terra modal. */
+.rs-chip {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  z-index: 2147483644;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid #3a3a44;
+  border-radius: 50%;
+  background: rgba(21, 21, 26, 0.88);
+  color: #c9c9d1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  /* NOTE: no backdrop-filter here — it breaks the game's GPU on the Vulkan ANGLE stack */
+}
+.rs-chip:hover { color: #ffffff; border-color: #55555f; }

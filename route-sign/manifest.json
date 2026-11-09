@@ -1,0 +1,27 @@
+{
+  "id": "route-sign",
+  "name": "Route Sign",
+  "version": "0.1.0",
+  "description": "One billboard sign anchored at a point along your route — set how far along the route, how far off to the side (metres), and how high (metres). One sign per ride.",
+  "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
+  "js": ["main.js"],
+  "css": ["style.css"],
+  "settings": [
+    { "key": "text", "label": "Sign text", "type": "text", "default": "Terra",
+      "description": "What the sign says" },
+    { "key": "whereAlongRoute", "label": "Where along route (0–1)", "type": "number", "default": 0.5,
+      "description": "0 = start · 1 = finish · 0.5 = midway" },
+    { "key": "side", "label": "Side offset (m)", "type": "number", "default": 4,
+      "description": "Metres off the road centreline. Use + or − to pick the side (flip the sign to switch). ~2 = road edge, ~5 = clear." },
+    { "key": "height", "label": "Sign height (m)", "type": "number", "default": 2,
+      "description": "Metres above the road" },
+    { "key": "showKm", "label": "Show km marker", "type": "checkbox", "default": true,
+      "description": "Prints the sign's distance along the route (km) after the text" },
+    { "key": "fontSize", "label": "Font size (px)", "type": "number", "default": 16, "description": "10 – 48" },
+    { "key": "plateColor", "label": "Sign color", "type": "color", "default": "#0d3b2e" },
+    { "key": "textColor", "label": "Text color", "type": "color", "default": "#f3f0e7" },
+    { "key": "bgOpacity", "label": "Sign opacity (%)", "type": "number", "default": 92 },
+    { "key": "maxDist", "label": "Max distance (m)", "type": "number", "default": 120,
+      "description": "Hide the sign beyond this range from the camera · 0 = unlimited" }
+  ]
+}
