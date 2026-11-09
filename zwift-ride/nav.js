@@ -79,6 +79,10 @@ function shouldSkipForController(el) {
       return true;
     }
 
+    // Skip duplicate thumbnail link (a.scene) inside .postcard so each card is a single stop
+    if (el.tagName === 'A' && el.classList.contains('scene') && el.closest('.postcard')?.querySelector('.postcard-title a')) {
+      return true;
+    }
     return false;
 }
 
@@ -106,10 +110,10 @@ document.documentElement.appendChild(ring);
 let focused = null, ringRaf = 0;
 
 function ringTarget(el) {
-  const dashRow = el.closest('.btz-dash-event-row');
-  if (dashRow) return dashRow;
-  const evCard = el.closest('.btz-events-page-card, .club-tile');
-  if (evCard) return evCard;
+  const card = el.closest(
+    '.btz-dash-event-row, .itin-row, .event-row, .btz-events-page-card, .btz-route-card-item, .route-tile, .postcard, .postcard-row, .club-tile'
+  );
+  if (card) return card;
   const r = el.getBoundingClientRect();
   for (const pseudo of ['::after', '::before']) {
     const cs = getComputedStyle(el, pseudo);
@@ -242,9 +246,11 @@ function findDefault() {
     return hits.find((b) => b.classList.contains('btn-primary')) || hits[0] || null;
   }
 
-  // 2. Dashboard: focus the first individual upcoming event row (or Quick Start tile)
+  // 2. Dashboard: focus the first individual upcoming event row
   if (path === '/dashboard' || path === '/dashboard/') {
-    const firstRowTarget = [...document.querySelectorAll('.btz-dash-event-target')].find(shown);
+    const firstRowTarget = [
+      ...document.querySelectorAll('.itin-row .itin-title a, .btz-dash-event-target, .event-row .event-row-title a')
+    ].find(shown);
     if (firstRowTarget) return firstRowTarget;
     const qTile = document.querySelector('.btz-qtile-primary');
     if (qTile && shown(qTile)) return qTile;
@@ -267,7 +273,9 @@ function findDefault() {
   }
   // 5. Clubs list (/clubs): focus first club card title link
   if (path === '/clubs' || path === '/clubs/') {
-    const firstClub = [...document.querySelectorAll('.club-tile .tile-title a, .club-tile a[href*="/clubs/"]')].find(shown);
+    const firstClub = [
+      ...document.querySelectorAll('.postcard .postcard-title a, .club-tile .tile-title a, .grid-cards a[href*="/clubs/"]')
+    ].find((a) => shown(a) && !a.classList.contains('scene'));
     if (firstClub) return firstClub;
   }
   return null;

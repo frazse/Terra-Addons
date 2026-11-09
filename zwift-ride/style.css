@@ -74,7 +74,8 @@ html.btz-page-dash .main > .content > .wrap,
 html.btz-page-routes .main > .content > .wrap,
 html.btz-page-route-detail .main > .content > .wrap,
 html.btz-page-events .main > .content > .wrap,
-html.btz-page-event-detail .main > .content > .wrap {
+html.btz-page-event-detail .main > .content > .wrap,
+html.btz-page-clubs .main > .content > .wrap {
   max-width: 96vw !important;
   width: 96vw !important;
   margin-left: auto !important;
@@ -283,6 +284,7 @@ box-shadow: 0 0 0 4px rgba(255, 107, 87, 0.25), 0 8px 24px rgba(0, 0, 0, 0.2) !i
 transition: left 0.08s ease-out, top 0.08s ease-out, width 0.08s ease-out, height 0.08s ease-out !important;
 }
 
+
 /* --- 6. BOTTOM CONSOLE HUD BAR --- */
 #btz-console-hud {
 position: fixed;
@@ -330,3 +332,5 @@ font: 800 11px system-ui, sans-serif;
 #btz-console-hud kbd.btz-k-b { background: #ec4899; color: #fff; }
 #btz-console-hud kbd.btz-k-y { background: #3b82f6; color: #fff; }
 #btz-console-hud kbd.btz-k-z { background: #f97316; color: #fff; }
+
+

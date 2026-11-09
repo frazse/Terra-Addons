@@ -40,8 +40,8 @@ function updateStatus() {
 
 // ---- header button: sits in Biketerra's nav row, right after the last link; floats if there is no header ----
 function headerHost() {
-  const link = (t) => [...document.querySelectorAll('a')].find((a) => a.textContent.trim() === t);
-  const first = link('Dashboard'), last = link('Challenges');
+  const link = (t) => [...document.querySelectorAll('.header a, nav a, a')].find((a) => a.textContent.trim() === t);
+  const first = link('Routes') || link('Dashboard'), last = link('Challenges');
   if (!first || !last) return null;
   let box = last.parentElement;
   while (box && !box.contains(first)) box = box.parentElement; // nav list = common ancestor of both links

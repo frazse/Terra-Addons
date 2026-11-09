@@ -11,7 +11,8 @@ function clearPageClasses() {
         'btz-page-routes',
         'btz-page-route-detail',
         'btz-page-events',
-        'btz-page-event-detail'
+        'btz-page-event-detail',
+        'btz-page-clubs'
     );
     // Remove any leftover .btz-wide-container from outer root/container wrappers so header/footer never get cut off
     document.querySelectorAll('.btz-wide-container').forEach((el) => {
@@ -241,7 +242,7 @@ function updateConsoleHud() {
     location.pathname === '/events' ||
     location.pathname === '/events/';
     const pageHint = isPaginated ? 'Scroll / Next Page' : 'Scroll Up / Down';
-
+    const card = focused.closest('.btz-dash-event-row, .btz-events-page-card, .btz-route-card-item, .postcard, .club-tile');
     hudEl.innerHTML = `
     <div class="btz-hud-target">${focusedText || 'Ready'}</div>
     <div class="btz-hud-keys">
@@ -267,6 +268,10 @@ function scheduleConsoleUi() {
             else if (/^\/routes\/.+/.test(path)) layoutDetailPage(false);
             else if (path === '/events' || path === '/events/') layoutEventsList();
             else if (/^\/events\/.+/.test(path)) layoutDetailPage(true);
+            else if (path === '/clubs' || path === '/clubs/') {
+                document.documentElement.classList.add('btz-page-clubs');
+                widenMainContentWrap();
+            }
         }
         updateConsoleHud();
     });
