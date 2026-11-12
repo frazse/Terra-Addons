@@ -79,6 +79,7 @@ const DEFAULTS = {
   showSpeed: false, showCadence: false, showHeart: false, showGap: false, showLap: false,
   plateHeight: 1.9, maxDist: 100, bgOpacity: 82,
   avoidOverlap: true, overlapGap: 2, spreadSideways: true, leaderLines: true,
+  contextAware: true, crowdThreshold: 5, dimOpacity: 45, surgeWindow: 20, surgeHold: 3, surgeSensitivity: 1,
 };
 let S = Object.assign({}, DEFAULTS);
 try { S = Object.assign({}, DEFAULTS, await terra.settings.all()); }
@@ -316,6 +317,97 @@ function waitForBT(ms = 20000) {
   });
 }
 
+/* ── context awareness: attack / sprint detector ──────────────────────────────
+ * Per rider, sampled ~4 Hz from the live sim (power -> W/kg, cadence, position -> speed)
+ * and kept as exponential moving averages: FAST (~1.5 s) vs SLOW (surgeWindow, ~20 s).
+ *   kick     = fast W/kg well above slow (ratio + absolute floor), or a cadence jump
+ *   confirm  = kick sustained for `surgeHold` seconds            (idle -> kick -> on)
+ *   end      = power falls >20 % off the effort's peak, or slow baseline catches up
+ * Then, at frame time, the score is scaled by how much the rider stands out from the
+ * visible group (W/kg lift vs the group's median lift, or gaining speed on the group),
+ * so "everybody lifted the pace" doesn't read as an attack. */
+const hist = new Map();
+const SAMPLE_DT = 0.25, FAST_TAU = 1.5, SPEED_TAU = 2.0, INST_TAU = 0.6, WARM = 8;
+let crowded = false, crowdLevel = 0, lastSweep = 0;
+const finite = v => v != null && Number.isFinite(+v);
+const ramp = (x, lo, hi) => (x <= lo ? 0 : x >= hi ? 1 : (x - lo) / (hi - lo));
+const median = arr => {
+  if (!arr.length) return null;
+  arr.sort((a, b) => a - b);
+  const m = arr.length >> 1;
+  return (arr.length & 1) ? arr[m] : (arr[m - 1] + arr[m]) / 2;
+};
+const ema = (cur, x, a) => (Number.isFinite(x) ? (Number.isFinite(cur) ? cur + (x - cur) * a : x) : cur);
+
+// 0..1 raw "kick" strength from the rider's own history
+function kickOf(h, k) {
+  if (!(h.fW >= 2) || !(h.fW - h.sW >= 0.5 / k)) return 0;              // absolute floor: not just 40 -> 90 W
+  let s = ramp(h.fW / Math.max(h.sW, 1), 1 + 0.25 / k, 1 + 0.8 / k);    // fast/slow power ratio
+  if (Number.isFinite(h.fC) && Number.isFinite(h.sC))
+    s = Math.max(s, 0.7 * ramp(h.fC - h.sC, 8 / k, 20 / k));            // cadence jump (rpm)
+return s;
+}
+
+function sampleRider(id, r, getSt, now, P) {
+  const sim = r.sim;
+  let h = hist.get(id);
+  if (!h) {
+    h = { first: now, pt: now, seen: now, px: null, pz: null,
+      fW: NaN, sW: NaN, vW: NaN, fC: NaN, sC: NaN, fS: NaN, st: 'idle', kickT: 0, peak: 0, k: 0 };
+      hist.set(id, h);
+  }
+  h.seen = now;
+  const dt = now - h.pt;
+  if (h.px != null && dt < SAMPLE_DT) return;
+  const st = getSt();
+  const pos = sim.midPosition;
+  const firstSample = h.px == null;
+  let spd = NaN;
+  if (!firstSample && dt > 0 && dt < 2) {
+    const v = Math.hypot(pos.x - h.px, pos.z - h.pz) / dt;
+    if (v < 40) spd = v;                                   // ignore teleports / respawns
+  }
+  h.px = pos.x; h.pz = pos.z; h.pt = now;
+
+  const pwr  = finite(sim.power) ? +sim.power : (st && finite(st.power) ? +st.power : NaN);
+  const mass = (r.config && r.config.mass) || (r.userData && r.userData.weight) || 75000;
+  const w    = Number.isFinite(pwr) ? (pwr * 1000) / mass : NaN;
+  const cad  = finite(sim.cadence) ? +sim.cadence : (st && finite(st.cadence) ? +st.cadence : NaN);
+
+  const dtc = firstSample ? 0 : Math.min(dt, 2);
+  const aF = 1 - Math.exp(-dtc / FAST_TAU), aS = 1 - Math.exp(-dtc / P.slowTau), aV = 1 - Math.exp(-dtc / SPEED_TAU), aI = 1 - Math.exp(-dtc / INST_TAU);
+  h.fW = ema(h.fW, w, aF);   h.sW = ema(h.sW, w, aS);   h.vW = ema(h.vW, w, aI);   // vW ~ instantaneous
+  h.fC = ema(h.fC, cad, aF); h.sC = ema(h.sC, cad, aS);
+  h.fS = ema(h.fS, spd, aV);
+
+  if (now - h.first < WARM) { h.st = 'idle'; h.k = 0; return; }           // baselines not warm yet
+  const kk = kickOf(h, P.k);
+  h.k = kk;
+  if (h.st === 'idle') {
+    if (kk >= 0.5) { h.st = 'kick'; h.kickT = now; h.peak = h.fW; }
+  } else if (h.st === 'kick') {
+    h.peak = Math.max(h.peak, h.fW);
+    // fizzled out before it counted: kick faded, or instantaneous power fell back toward baseline
+    if (kk < 0.3 || (Number.isFinite(h.vW) && h.vW < h.sW + 0.5 * (h.peak - h.sW))) h.st = 'idle';
+    else if (now - h.kickT >= P.hold) h.st = 'on';                        // sustained => real effort
+  } else {                                                               // 'on'
+    h.peak = Math.max(h.peak, h.fW);
+    if (h.fW < Math.max(2, 0.8 * h.peak) || h.fW < h.sW * 1.05) h.st = 'idle';
+  }
+}
+
+// 0..1 final score at frame time: state x "stands out from the visible group"
+function scoreOf(h, medDW, medS, nGroup) {
+  if (!h || h.st === 'idle') return 0;
+  const base = h.st === 'on' ? 1 : 0.4;                                   // 'kick' = tentative
+  let rel = 1;
+  if (nGroup >= 3 && medDW != null) {
+    rel = ramp((h.fW - h.sW) - medDW, 0.15, 0.5);                         // lifted more than the group did
+    if (medS != null && Number.isFinite(h.fS)) rel = Math.max(rel, ramp((h.fS - medS) * 3.6, 0.3, 2));  // or is gaining on it
+  }
+  return base * (0.4 + 0.6 * rel);
+}
+
 /* ── render loop (installed via addFeature) ───────────────────────────────── */
 function makeFeature(app) {
   const rc = () => app && app.riderController;
@@ -347,6 +439,24 @@ function makeFeature(app) {
         if (!r || !r.sim) continue;
         if (r === focal) continue;                    // already pushed above
         list.push({ r, focal: false });
+      }
+
+      /* ── context awareness: sample everyone's recent power/speed ───────── */
+      const tNow = performance.now() / 1000;
+      const ctx  = !!S.contextAware;
+      if (ctx) {
+        const P = { k: clamp(S.surgeSensitivity, 0.25, 4), hold: clamp(S.surgeHold, 1, 15), slowTau: clamp(S.surgeWindow, 5, 120) };
+        for (const { r, focal: isF } of list) {
+          const sm = r.sim;
+          if (sm.curLod === 0) continue;
+          const sid = (sm.id != null) ? sm.id : sm.athleteId;
+          if (sid == null) continue;
+          sampleRider(sid, r, () => statsFor(sid, isF, focalIsEgo, r), tNow, P);
+        }
+        if (tNow - lastSweep > 5) {
+          lastSweep = tNow;
+          for (const [k, h] of hist) if (tNow - h.seen > 10) hist.delete(k);
+        }
       }
 
       const active = new Set();
@@ -427,7 +537,48 @@ if (S.spreadSideways || S.leaderLines) {
     footY = (1 - (ny0 * 0.5 + 0.5)) * H;
   }
 }
-entries.push({ el, sx, sy, sc, w, footY, focal: isFocal });
+entries.push({ el, sx, sy, sc, w, footY, id, focal: isFocal });
+      }
+
+      /* ── context awareness ───────────────────────────────────────────────
+       * Few riders (<= crowdThreshold): plates untouched.
+       * Crowded: calm riders fade to dimOpacity; a rider who's surging
+       * (see surgeOf) fades back in and gets a highlight ring. The focal rider
+       * is never dimmed. Crowd level, surge and opacity all ease in/out. */
+      {
+        const thr = Math.max(1, Math.round(num(S.crowdThreshold, 5)));
+        const n = entries.length;
+        if (n > thr) crowded = true; else if (n < thr) crowded = false;   // n == thr keeps the previous state
+        crowdLevel += ((ctx && crowded ? 1 : 0) - crowdLevel) * 0.08;
+        if (crowdLevel < 0.002) crowdLevel = 0; else if (crowdLevel > 0.998) crowdLevel = 1;
+        const dim = clamp(S.dimOpacity, 5, 100) / 100;
+        let medDW = null, medS = null, nGroup = 0;
+        if (ctx && crowdLevel > 0) {                 // what the visible group as a whole is doing
+          const dws = [], sps = [];
+          for (const e of entries) {
+            const h = hist.get(e.id);
+            if (!h || tNow - h.first < WARM || !Number.isFinite(h.sW)) continue;
+            dws.push(h.fW - h.sW);
+            if (Number.isFinite(h.fS)) sps.push(h.fS);
+          }
+          nGroup = dws.length;
+          medDW = median(dws); medS = median(sps);
+        }
+        for (const e of entries) {
+          const el = e.el;
+          const target = (ctx && crowdLevel > 0) ? scoreOf(hist.get(e.id), medDW, medS, nGroup) : 0;
+          const cur = el._npSurge || 0;
+          el._npSurge = cur + (target - cur) * (target > cur ? 0.3 : 0.03);   // fast attack, slow release
+          const calm = dim + (1 - dim) * el._npSurge;
+          el._npOpV = e.focal ? 1 : 1 + crowdLevel * (calm - 1);
+          const ops = el._npOpV >= 0.995 ? '' : el._npOpV.toFixed(2);
+          if (el._npOpS !== ops) { el.style.opacity = ops; el._npOpS = ops; }
+          const hot = !e.focal && crowdLevel > 0.5 && el._npSurge > 0.6;
+          if (el._npHot !== hot) { el.classList.toggle('np-hot', hot); el._npHot = hot; }
+          const z = String((e.focal ? 30 : 0) + Math.round(el._npSurge * 20));
+          if (el._npZ !== z) { el.style.zIndex = z; el._npZ = z; }
+          e.hot = hot ? 1 : 0;
+        }
       }
 
       /* ── layout ─────────────────────────────────────────────────────────
@@ -450,7 +601,7 @@ entries.push({ el, sx, sy, sc, w, footY, focal: isFocal });
           el._npFs = S.fontSize;
         }
       }
-      if (avoid) entries.sort((a, b) => (b.focal - a.focal) || (a.w - b.w));
+      if (avoid) entries.sort((a, b) => (b.focal - a.focal) || (b.hot - a.hot) || (a.w - b.w));
 
       const placed = [];
       if (spread) {                           // avatar boxes are obstacles for every plate
@@ -532,6 +683,7 @@ entries.push({ el, sx, sy, sc, w, footY, focal: isFocal });
           ln.setAttribute('x1', ax.toFixed(1)); ln.setAttribute('y1', y.toFixed(1));
           ln.setAttribute('x2', e.sx.toFixed(1)); ln.setAttribute('y2', ty.toFixed(1));
           dot.setAttribute('cx', e.sx.toFixed(1)); dot.setAttribute('cy', ty.toFixed(1));
+          ln.style.opacity = dot.style.opacity = el._npOpS;       // follow the plate's fade
           ln.style.display = ''; dot.style.display = '';
         } else if (ln) {
           ln.style.display = 'none'; dot.style.display = 'none';
