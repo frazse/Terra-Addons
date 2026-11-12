@@ -96,6 +96,10 @@ html.btz-page-clubs .main > .content > .wrap {
   row-gap: 16px !important;
   align-items: start !important;
 }
+.itin-stats {
+  text-align: left !important;
+  grid-template-columns: none !important;
+}
 
 /* Row 1: "Welcome back, Josef" + live rider pill */
 .btz-dash-header {
@@ -116,10 +120,9 @@ html.btz-page-clubs .main > .content > .wrap {
 .btz-dash-col-events { grid-column: 1 !important; }
 .btz-dash-col-stats {
   grid-column: 2 !important;
-  /* Push the white "LAST 2 WEEKS" card down by the height of the "COMING UP" / "COMMUNITY" eyebrow heading (~25px)
-   so the top edges of the white cards in all 3 columns line up *horizontally! */
-  margin-top: 25px !important;
+  margin-top: -5px !important; /* Adjust between -14px and -20px to match .ds padding */
 }
+
 .btz-dash-col-community { grid-column: 3 !important; }
 
 /* Remove any extra top margin on the "COMING UP" and "COMMUNITY" eyebrow labels */
