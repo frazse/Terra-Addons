@@ -57,399 +57,535 @@
   /* ── tunables (screen-space only; everything else is a setting) ────────────── */
   const HORIZON_PAD  = 1.10;  // hide plates beyond this fraction of the NDC half-extent
   const NEAR_W       = 0.15;  // hide plates whose clip-space W is below this (behind near plane)
-  const SCALE_NEAR_W = 10;    // at clip-W = 10, scale = 1.0 and then we scale down with distance
-  const SCALE_MIN    = 0.55;  // never smaller than this
-  const SCALE_MAX    = 1.00;  // never larger than this
+const SCALE_NEAR_W = 10;    // at clip-W = 10, scale = 1.0 and then we scale down with distance
+const SCALE_MIN    = 0.55;  // never smaller than this
+const SCALE_MAX    = 1.00;  // never larger than this
+// declutter (sideways spreading + leader lines)
+const SPREAD_STEP  = 24;    // px between candidate sideways slots
+const MAX_SPREAD   = 360;   // max px a plate may slide left/right of its rider
+const SIDE_W       = 0.5;   // cost of 1 px sideways vs 1 px upward (higher = prefer rising)
+const STICKY       = 0.25;  // hysteresis: cost of changing side vs the previous frame
+const AVATAR_H     = 1.75;  // metres: rider+bike height used as the "keep clear" box
+const AVATAR_HALF_W = 0.55; // metres: half-width of that box
+const LINE_MIN     = 3;     // px of displacement before a leader line is drawn
+const LEADER_H     = 1.3;   // metres above the rider's base where the leader line attaches (torso)
 
-  /* ── settings ──────────────────────────────────────────────────────────────── */
-  // Defaults mirror manifest.json; `all()` returns stored-over-default.
-  const DEFAULTS = {
-    nameFormat: 'full', showEgo: true, fontSize: 12,
-    colorMode: 'custom', plateColor: '#0f172a', egoPlateColor: '#dc2626',
-    showPower: true, showWkg: true,
-    showSpeed: false, showCadence: false, showHeart: false, showGap: false, showLap: false,
-    plateHeight: 1.9, maxDist: 100, bgOpacity: 82,
-  };
-  let S = Object.assign({}, DEFAULTS);
-  try { S = Object.assign({}, DEFAULTS, await terra.settings.all()); }
-  catch (e) { log('could not read settings, using defaults: ' + e); }
+/* ── settings ──────────────────────────────────────────────────────────────── */
+// Defaults mirror manifest.json; `all()` returns stored-over-default.
+const DEFAULTS = {
+  nameFormat: 'full', showEgo: true, fontSize: 12,
+  colorMode: 'custom', plateColor: '#0f172a', egoPlateColor: '#dc2626',
+  showPower: true, showWkg: true,
+  showSpeed: false, showCadence: false, showHeart: false, showGap: false, showLap: false,
+  plateHeight: 1.9, maxDist: 100, bgOpacity: 82,
+  avoidOverlap: true, overlapGap: 2, spreadSideways: true, leaderLines: true,
+};
+let S = Object.assign({}, DEFAULTS);
+try { S = Object.assign({}, DEFAULTS, await terra.settings.all()); }
+catch (e) { log('could not read settings, using defaults: ' + e); }
 
-  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(+v) ? +v : lo));
-  const num = (v, dflt) => (Number.isFinite(+v) ? +v : dflt);
-  const px = v => clamp(v, 6, 40) + 'px';
-  let appRef = null; // btApp, once acquired (also read from inside helmetRgb)
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(+v) ? +v : lo));
+const num = (v, dflt) => (Number.isFinite(+v) ? +v : dflt);
+const px = v => clamp(v, 6, 40) + 'px';
+let appRef = null; // btApp, once acquired (also read from inside helmetRgb)
 
-  /* ── overlay ──────────────────────────────────────────────────────────────── */
-  const ov = document.createElement('div');
-  ov.className = 'nameplates-ov';
-  ov.style.fontSize = px(S.fontSize);
-  document.body.appendChild(ov);
+/* ── overlay ──────────────────────────────────────────────────────────────── */
+const ov = document.createElement('div');
+ov.className = 'nameplates-ov';
+ov.style.fontSize = px(S.fontSize);
+document.body.appendChild(ov);
+const SVGNS = 'http://www.w3.org/2000/svg';
+const lineLayer = document.createElementNS(SVGNS, 'svg');   // first child => drawn under the plates
+lineLayer.setAttribute('class', 'np-lines');
+ov.appendChild(lineLayer);
 
-  const applyGlobal = () => { ov.style.fontSize = px(S.fontSize); };
-  const applyS = (v) => { S = Object.assign({}, DEFAULTS, v); applyGlobal(); };
-  const fetchSettings = (then) => terra.settings.all().then(then).catch(e => log('settings refresh failed: ' + e));
-  try {
-    terra.settings.onChange(() => { fetchSettings(applyS); }); // re-read: the UI emit is synchronous, our read isn't
-  } catch (e) { /* older Terra core */ }
+const applyGlobal = () => { ov.style.fontSize = px(S.fontSize); };
+const applyS = (v) => { S = Object.assign({}, DEFAULTS, v); applyGlobal(); };
+const fetchSettings = (then) => terra.settings.all().then(then).catch(e => log('settings refresh failed: ' + e));
+try {
+  terra.settings.onChange(() => { fetchSettings(applyS); }); // re-read: the UI emit is synchronous, our read isn't
+} catch (e) { /* older Terra core */ }
 
-  /* ── ⚙ chip — ride pages usually have no header, so put a small button here ── */
-  const chip = document.createElement('button');
-  chip.type = 'button';
-  chip.className = 'np-chip';
-  chip.title = 'Nameplates settings';
-  chip.innerHTML =
-    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" ' +
-    'stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle>' +
-    '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09a1.65 1.65 0 0 0-1.15-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
-  chip.addEventListener('click', () => { try { terra.settings.open(); } catch (e) {} });
-  document.body.appendChild(chip);
+/* ── ⚙ chip — ride pages usually have no header, so put a small button here ── */
+const chip = document.createElement('button');
+chip.type = 'button';
+chip.className = 'np-chip';
+chip.title = 'Nameplates settings';
+chip.innerHTML =
+'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" ' +
+'stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle>' +
+'<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09a1.65 1.65 0 0 0-1.15-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
+chip.addEventListener('click', () => { try { terra.settings.open(); } catch (e) {} });
+document.body.appendChild(chip);
 
-  /* ── live stats cache (2 Hz broadcast) ─────────────────────────────────────── */
-  const statsById   = new Map(); // String(id) -> stats from frame.riders
-  const statsByName = new Map(); // lowercased name -> stats (id shapes may differ between
-                                 // the game graph and the broadcast; names are the fallback)
-  let egoStats      = null;      // frame.ego
-  try {
-    terra.ride.onRide(frame => {
-      if (!frame) return;
-      if (frame.ego) egoStats = frame.ego;
-      if (Array.isArray(frame.riders)) {
-        statsById.clear();
-        statsByName.clear();
-        for (const s of frame.riders) {
-          if (!s) continue;
-          if (s.id != null) statsById.set(String(s.id), s);
-          if (s.name) statsByName.set(String(s.name).toLowerCase(), s);
+/* ── live stats cache (2 Hz broadcast) ─────────────────────────────────────── */
+const statsById   = new Map(); // String(id) -> stats from frame.riders
+const statsByName = new Map(); // lowercased name -> stats (id shapes may differ between
+// the game graph and the broadcast; names are the fallback)
+let egoStats      = null;      // frame.ego
+try {
+  terra.ride.onRide(frame => {
+    if (!frame) return;
+    if (frame.ego) egoStats = frame.ego;
+    if (Array.isArray(frame.riders)) {
+      statsById.clear();
+      statsByName.clear();
+      for (const s of frame.riders) {
+        if (!s) continue;
+        if (s.id != null) statsById.set(String(s.id), s);
+        if (s.name) statsByName.set(String(s.name).toLowerCase(), s);
+      }
+    }
+  });
+} catch (e) { /* older Terra core */ }
+
+const statsFor = (id, isFocal, focalIsEgo, r) => {
+  let st = id != null ? statsById.get(String(id)) : undefined;
+  if (!st && r) {
+    const cfg = r.config || {}, ud = r.userData || {};
+    const name = ((ud.first_name != null ? ud.first_name : cfg.first_name) || '') + ' '
+    + (cfg.last_name  != null ? cfg.last_name  : (ud.last_name  != null ? ud.last_name : ''));
+    const key = name.toLowerCase();
+    if (key) st = statsByName.get(key);
+  }
+  if (!st && isFocal && focalIsEgo) st = egoStats;
+  return st || null;
+};
+
+/* ── names ─────────────────────────────────────────────────────────────────── */
+const fmtInt = v => (Number.isFinite(+v) ? Math.round(+v) : 0);
+const fmt1   = v => (Number.isFinite(+v) ? (+v).toFixed(1) : '0.0');
+const trim   = v => String(v == null ? '' : v).trim();
+
+function nameFor(r, isFocal, id) {
+  const cfg = (r && r.config)   || {};
+  const ud  = (r && r.userData) || {};
+  const first = trim(ud.first_name != null ? ud.first_name : cfg.first_name);
+  const last  = trim(cfg.last_name  != null ? cfg.last_name : ud.last_name);
+  const full  = (first + ' ' + last).trim();
+  if (S.nameFormat === 'none') return '';
+  const fall  = isFocal ? 'You' : (id != null ? 'Rider #' + id : 'Rider');
+  if (S.nameFormat === 'short') return first || last || full || fall;
+  if (S.nameFormat === 'last')  return last || first || full || fall;
+  return full || fall;
+}
+
+/* ── colors ────────────────────────────────────────────────────────────────── */
+function rgbFromHex(v) {
+  if (typeof v === 'string') {
+    const m = v.trim().match(/^#?([0-9a-f]{6})([0-9a-f]{2})?$/i)
+    || v.trim().match(/^#?([0-9a-f]{3})$/i);
+    if (m) {
+      let h = m[1];
+      if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+      return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+    }
+    const n = Number(v);
+    if (Number.isFinite(n) && n >= 0) return [Math.min(255, n >> 16), Math.min(255, (n >> 8) & 255), Math.min(255, n & 255)];
+  }
+  if (Number.isFinite(v) && v >= 0) return [Math.min(255, Math.floor(v) >> 16), Math.min(255, (Math.floor(v) >> 8) & 255), Math.min(255, Math.floor(v) & 255)];
+  if (Array.isArray(v) && v.length >= 3) return [clamp(v[0], 0, 255), clamp(v[1], 0, 255), clamp(v[2], 0, 255)];
+  if (v && typeof v === 'object' && v.r != null) return [clamp(v.r, 0, 255), clamp(v.g, 0, 255), clamp(v.b, 0, 255)];
+  return null;
+}
+
+function hashRgb(seed) { // stable per-rider pseudo-random color
+  let h = 2166136261;
+  for (const ch of String(seed == null ? '' : seed)) h = Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0;
+  const hue = h % 360, sat = 0.62, lit = 0.42; // HSL
+  const c = (1 - Math.abs(2 * lit - 1)) * sat, x = c * (1 - Math.abs((hue / 60) % 2 - 1)), m = lit - c / 2;
+  const q = hue < 60 ? [c, x, 0] : hue < 120 ? [x, c, 0] : hue < 180 ? [0, c, x] : hue < 240 ? [0, x, c] : hue < 300 ? [x, 0, c] : [c, 0, x];
+  return [Math.round((q[0] + m) * 255), Math.round((q[1] + m) * 255), Math.round((q[2] + m) * 255)];
+}
+
+function helmetRgb(r, id, isFocal) {
+  const rc = appRef && appRef.riderController;
+  const pick = (o) => o && o.design && rgbFromHex(o.design.helmet_color);
+  // 1) The rider object itself — bots, other humans, and focal alike carry
+  //    their own design on the rider struct; this is the one to trust.
+  const own = pick(r);
+  if (own) return own;
+  if (!rc) return null;
+  // 2) The focal slot (r can predate rc.focalRider at hand-over).
+  if (isFocal) { const p = pick(rc.focalRider); if (p) return p; }
+  // 3) The human feed (other live humans keyed by id).
+  if (rc.humanFeed && rc.humanFeed.humans) {
+    const e = rc.humanFeed.humans[id] || rc.humanFeed.humans[String(id)];
+    const p = pick(e);
+    if (p) return p;
+  }
+  // Deliberate: NO ego fallback — that is what painted every bot with the
+  // focal rider's helmet color. resolveRgb() falls back to the custom
+  // plate colors instead, which reads as "no helmet color available".
+  return null;
+}
+
+let colorCache = null; // parsed custom colors, keyed by the values (avoids re-parsing per frame)
+const customRgb = (isFocal) => {
+  const key = (S.plateColor || '') + '|' + (S.egoPlateColor || '');
+  if (!colorCache || colorCache.key !== key) {
+    colorCache = { key, ego: rgbFromHex(S.egoPlateColor) || [0, 0, 0], bot: rgbFromHex(S.plateColor) || [0, 0, 0] };
+  }
+  return isFocal ? colorCache.ego : colorCache.bot;
+};
+const hashCache = new Map(); // rider seed -> [r,g,b] (stable per rider, so stable too)
+const resolveRgb = (id, isFocal, r) => {
+  if (S.colorMode === 'random') {
+    const k = String(id);
+    let h = hashCache.get(k);
+    if (!h) { h = hashRgb(id); hashCache.set(k, h); }
+    return h;
+  }
+  if (S.colorMode === 'helmet') { const h = helmetRgb(r, id, isFocal); if (h) return h; }
+  return customRgb(isFocal);
+};
+const rgbCss  = rgb => 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + (clamp(S.bgOpacity, 0, 100) / 100).toFixed(2) + ')';
+const textFor = rgb => ((0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255 > 0.58) ? '#0f172a' : '#ffffff';
+
+/* ── label ─────────────────────────────────────────────────────────────────── */
+function labelText(name, st, r) {
+  const parts = [];
+  const sim = (r && r.sim) || {};
+  // A stat is "available" when it is present and finite — deliberately
+  // INCLUDING 0 (stopped at the lights: 0 W / 0 rpm should still show).
+  // Stats that are unreported (absent / not a number) stay hidden.
+  const avail = (v) => v != null && Number.isFinite(+v);
+  const pwr = avail(sim.power) ? +sim.power
+  : (st && avail(st.power) ? +st.power : null);
+  if (S.showPower && pwr != null) parts.push(fmtInt(pwr) + ' W');
+  if (S.showWkg && pwr != null) {
+    const massG = (r && r.config && r.config.mass) || (r && r.userData && r.userData.weight) || 75000;
+    const w = (st && avail(st.wkg)) ? +st.wkg : (pwr * 1000) / massG;
+    parts.push('(' + fmt1(w) + ' W/kg)');
+  }
+  if (st) {
+    if (S.showSpeed && avail(st.speed)) parts.push(fmt1(st.speed * 3.6) + ' km/h');
+    if (S.showCadence && avail(st.cadence))   parts.push(fmtInt(st.cadence)   + ' rpm');
+    if (S.showHeart   && avail(st.heartRate)) parts.push(fmtInt(st.heartRate) + ' bpm');
+    if (S.showGap     && avail(st.gap))       parts.push('+' + fmt1(st.gap) + ' s');
+    if (S.showLap     && avail(st.lapCount))  parts.push('Lap ' + fmtInt(st.lapCount));
+  }
+  if (!name) return parts.join('  •  ');   // name format "none": stats only (empty if none enabled)
+return parts.length ? name + '  •  ' + parts.join('  •  ') : name;
+}
+
+/* ── live preview in the cog menu ──────────────────────────────────────────── */
+const SAMPLE = { power: 210, wkg: 2.8, speed: 37.4, cadence: 88, heartRate: 152, gap: 12.4, lapCount: 8 };
+function paintPreview(slot) {
+  if (!slot) { log('preview: hidden (slot=null)'); return; } // nothing to tear down (static sample, no timers)
+const mk = (name, rgb) => {
+  const el = document.createElement('div');
+  el.className = 'np np-sample';
+  el.style.background = rgbCss(rgb);
+  el.style.color = textFor(rgb);
+  el.style.fontSize = px(S.fontSize);
+  el.textContent = labelText(name, SAMPLE, null);
+  return el;
+};
+// helmet colors can't be sampled out of the game; preview with the custom colors
+const paintNow = () => {
+  slot.replaceChildren(mk('Josef Nilsson', customRgb(true)), mk('Alex Kim', customRgb(false)));
+};
+paintNow();
+log('preview painted: ' + slot.children.length + ' sample(s)');
+// The UI fires this the instant a save lands, but our cached copy of the
+// settings may still be resolving — repaint once with the server's value.
+try { terra.settings.all().then(applyS).then(paintNow).catch(() => {}); } catch (e) {}
+}
+try { terra.settings.preview(paintPreview); } catch (e) { /* older Terra core */ }
+
+/* ── plates ────────────────────────────────────────────────────────────────── */
+/** map of rider identity → live plate element. */
+const plates = new Map();
+/** last identity we saw in the frame; used to drop plates no longer on screen. */
+let lastActive = new Set();
+let cleanRef   = null;
+let cleaned    = false;
+
+/* ── find window.btApp (poll via rAF until the game exposes it) ──────────── */
+function waitForBT(ms = 20000) {
+  return new Promise((resolve, reject) => {
+    const t0 = performance.now();
+    const poke = () => {
+      const app = window.btApp;
+      if (app && typeof app.addFeature === 'function') return resolve(app);
+      if (performance.now() - t0 > ms) return reject(new Error('btApp not found within ' + ms + 'ms'));
+      requestAnimationFrame(poke);
+    };
+    poke();
+  });
+}
+
+/* ── render loop (installed via addFeature) ───────────────────────────────── */
+function makeFeature(app) {
+  const rc = () => app && app.riderController;
+
+  return {
+    frame(frameState) {
+      if (cleaned) return;
+      const cam  = frameState && frameState.camera;
+      const R    = rc();
+      const vp   = cam  && cam.viewProj;
+      if (!vp || !R) return;
+
+      const lift   = clamp(S.plateHeight, 0.5, 4);   // metres above the rider
+      const maxD   = num(S.maxDist, 100);            // 0 = unlimited
+      const showEgo = !!S.showEgo;
+
+      const [ox, oz] = (frameState.origin && frameState.origin.length >= 2)
+      ? [frameState.origin[0], frameState.origin[1]] : [0, 0];
+      const hideFocal = !!(frameState.rig   && frameState.rig.hideFocalRider);
+      const W          = window.innerWidth  || document.documentElement.clientWidth;
+      const H          = window.innerHeight || document.documentElement.clientHeight;
+
+      /* ── build this frame's rider list (focal + bots), deduped ───────── */
+      const focal = R.focalRider || R.ego;
+      const focalIsEgo = (R.ego !== undefined && R.ego !== null) && focal === R.ego;
+      const list  = [];
+      if (showEgo && focal && focal.sim) list.push({ r: focal, focal: true });
+      for (const r of (R.riders || [])) {
+        if (!r || !r.sim) continue;
+        if (r === focal) continue;                    // already pushed above
+        list.push({ r, focal: false });
+      }
+
+      const active = new Set();
+      const entries = [];   // visible plates this frame, laid out after the loop
+      const drop = el => { if (el && el._npLine && el._npLine.parentNode) el._npLine.remove(); if (el && el._npDot && el._npDot.parentNode) el._npDot.remove(); if (el && el.parentNode) el.remove(); };
+      const focalPos = (focal && focal.sim) ? focal.sim.midPosition : null;
+
+      for (const { r, focal: isFocal } of list) {
+        const sim = r.sim;
+        if (sim.curLod === 0) continue;               // game has culled this rider
+        if (isFocal && hideFocal) continue;           // first-person: focal isn't on screen
+        if (isFocal && !showEgo) continue;            // plate hidden by settings
+
+        /* ── range gate: skip non-focal riders farther than maxD from focal ── */
+        if (!isFocal && maxD > 0 && focalPos) {
+          const dx = sim.midPosition.x - focalPos.x;
+          const dy = sim.midPosition.y - focalPos.y;
+          const dz = sim.midPosition.z - focalPos.z;
+          if (Math.sqrt(dx*dx + dy*dy + dz*dz) > maxD) {
+            const id0 = (sim.id != null) ? sim.id : sim.athleteId;
+            const el0 = plates.get(id0);
+            if (el0) el0.style.display = 'none';
+            continue;
+          }
+        }
+
+        const id = (sim.id != null) ? sim.id : sim.athleteId;
+        if (id != null) active.add(id);
+
+        /* ── world → origin-relative → clip → NDC ─────────────────────── */
+        const rx = sim.midPosition.x - ox;
+        const ry = sim.midPosition.y + lift;
+        const rz = sim.midPosition.z - oz;
+        const w  = vp[3] * rx + vp[7] * ry + vp[11] * rz + vp[15];
+        let el = plates.get(id);   // NOTE: `let` — reassigned on lazy plate creation below
+        if (w <= NEAR_W || !Number.isFinite(w)) { if (el) el.style.display = 'none'; continue; }
+        const iw = 1 / w;
+        const nx = (vp[0] * rx + vp[4] * ry + vp[8] * rz  + vp[12]) * iw;
+        const ny = (vp[1] * rx + vp[5] * ry + vp[9] * rz  + vp[13]) * iw;
+        if (!Number.isFinite(nx) || !Number.isFinite(ny)) { if (el) el.style.display = 'none'; continue; }
+        if (Math.abs(nx) > HORIZON_PAD || Math.abs(ny) > HORIZON_PAD) { if (el) el.style.display = 'none'; continue; }
+
+        /* ── label ────────────────────────────────────────────────────── */
+        const st = statsFor(id, isFocal, focalIsEgo, r);
+        const text = labelText(nameFor(r, isFocal, id), st, r);
+        if (!el) {                  // lazy-create (also survives a page navigation)
+          el = document.createElement('div');
+          el.className = 'np' + (isFocal ? ' np-focal' : '');
+          el.style.display = 'none';
+          el._npOff = 0;
+          ov.appendChild(el);
+          plates.set(id, el);
+        }
+        if (el.textContent !== text) { el.textContent = text; el._npSize = null; }
+        if (!text) { el.style.display = 'none'; continue; }   // nothing to show (no name, no stats)
+
+/* ── colors (per mode; re-applied only when they change) ────────── */
+const rgb = resolveRgb(id, isFocal, r);
+const bg = rgbCss(rgb), tx = textFor(rgb);
+const key = bg + '|' + tx;
+if (el._npStyle !== key) {
+  el.style.background = bg;
+  el.style.color = tx;
+  el._npStyle = key;
+}
+
+/* ── position + scale ─────────────────────────────────────────── */
+const sx = (nx * 0.5 + 0.5) * W;
+const sy = (1 - (ny * 0.5 + 0.5)) * H;
+const sc = Math.max(SCALE_MIN, Math.min(SCALE_MAX, SCALE_NEAR_W / Math.max(SCALE_NEAR_W, w)));
+el.style.display = 'block';
+let footY = null;                      // screen-y of the rider's base (avatar box for "keep clear")
+if (S.spreadSideways || S.leaderLines) {
+  const ry0 = sim.midPosition.y;
+  const w0  = vp[3] * rx + vp[7] * ry0 + vp[11] * rz + vp[15];
+  if (w0 > NEAR_W) {
+    const ny0 = (vp[1] * rx + vp[5] * ry0 + vp[9] * rz + vp[13]) / w0;
+    footY = (1 - (ny0 * 0.5 + 0.5)) * H;
+  }
+}
+entries.push({ el, sx, sy, sc, w, footY, focal: isFocal });
+      }
+
+      /* ── layout ─────────────────────────────────────────────────────────
+       * Priority: focal first, then nearest to camera (smallest clip-W).
+       * Each plate starts at its anchor (just above the rider). If that spot
+       * collides with an already-placed plate -- or, in spread mode, with any
+       * rider's avatar box -- it rises until clear. In spread mode we also try
+       * sliding sideways in SPREAD_STEP slots and pick the cheapest
+       * (rise + SIDE_W * |dx|), so a tight bunch fans out into a row/arc above
+       * the pack instead of a tall tower. A thin leader line ties each
+       * displaced plate back to its rider. */
+      const avoid  = !!S.avoidOverlap;
+      const spread = avoid && !!S.spreadSideways;
+      const wantLines = !!S.leaderLines;
+      const gap    = clamp(S.overlapGap, 0, 20);
+      for (const e of entries) {              // measure only when text/font changed (batched reads)
+        const el = e.el;
+        if (!el._npSize || el._npFs !== S.fontSize) {
+          el._npSize = { w: el.offsetWidth, h: el.offsetHeight };
+          el._npFs = S.fontSize;
         }
       }
-    });
-  } catch (e) { /* older Terra core */ }
+      if (avoid) entries.sort((a, b) => (b.focal - a.focal) || (a.w - b.w));
 
-  const statsFor = (id, isFocal, focalIsEgo, r) => {
-    let st = id != null ? statsById.get(String(id)) : undefined;
-    if (!st && r) {
-      const cfg = r.config || {}, ud = r.userData || {};
-      const name = ((ud.first_name != null ? ud.first_name : cfg.first_name) || '') + ' '
-                 + (cfg.last_name  != null ? cfg.last_name  : (ud.last_name  != null ? ud.last_name : ''));
-      const key = name.toLowerCase();
-      if (key) st = statsByName.get(key);
-    }
-    if (!st && isFocal && focalIsEgo) st = egoStats;
-    return st || null;
-  };
-
-  /* ── names ─────────────────────────────────────────────────────────────────── */
-  const fmtInt = v => (Number.isFinite(+v) ? Math.round(+v) : 0);
-  const fmt1   = v => (Number.isFinite(+v) ? (+v).toFixed(1) : '0.0');
-  const trim   = v => String(v == null ? '' : v).trim();
-
-  function nameFor(r, isFocal, id) {
-    const cfg = (r && r.config)   || {};
-    const ud  = (r && r.userData) || {};
-    const first = trim(ud.first_name != null ? ud.first_name : cfg.first_name);
-    const last  = trim(cfg.last_name  != null ? cfg.last_name : ud.last_name);
-    const full  = (first + ' ' + last).trim();
-    const fall  = isFocal ? 'You' : (id != null ? 'Rider #' + id : 'Rider');
-    if (S.nameFormat === 'short') return first || last || full || fall;
-    if (S.nameFormat === 'last')  return last || first || full || fall;
-    return full || fall;
-  }
-
-  /* ── colors ────────────────────────────────────────────────────────────────── */
-  function rgbFromHex(v) {
-    if (typeof v === 'string') {
-      const m = v.trim().match(/^#?([0-9a-f]{6})([0-9a-f]{2})?$/i)
-              || v.trim().match(/^#?([0-9a-f]{3})$/i);
-      if (m) {
-        let h = m[1];
-        if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
-        return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+      const placed = [];
+      if (spread) {                           // avatar boxes are obstacles for every plate
+        for (const e of entries) {
+          if (e.footY == null) continue;
+          const ppm = (e.footY - e.sy) / lift;           // screen px per metre at this rider
+          if (!(ppm > 0)) continue;
+          const hw = AVATAR_HALF_W * ppm;
+          placed.push({ l: e.sx - hw, r: e.sx + hw,
+            t: Math.max(e.sy + 1, e.footY - AVATAR_H * ppm), b: e.footY });
+        }
       }
-      const n = Number(v);
-      if (Number.isFinite(n) && n >= 0) return [Math.min(255, n >> 16), Math.min(255, (n >> 8) & 255), Math.min(255, n & 255)];
-    }
-    if (Number.isFinite(v) && v >= 0) return [Math.min(255, Math.floor(v) >> 16), Math.min(255, (Math.floor(v) >> 8) & 255), Math.min(255, Math.floor(v) & 255)];
-    if (Array.isArray(v) && v.length >= 3) return [clamp(v[0], 0, 255), clamp(v[1], 0, 255), clamp(v[2], 0, 255)];
-    if (v && typeof v === 'object' && v.r != null) return [clamp(v.r, 0, 255), clamp(v.g, 0, 255), clamp(v.b, 0, 255)];
-    return null;
-  }
-
-  function hashRgb(seed) { // stable per-rider pseudo-random color
-    let h = 2166136261;
-    for (const ch of String(seed == null ? '' : seed)) h = Math.imul(h ^ ch.charCodeAt(0), 16777619) >>> 0;
-    const hue = h % 360, sat = 0.62, lit = 0.42; // HSL
-    const c = (1 - Math.abs(2 * lit - 1)) * sat, x = c * (1 - Math.abs((hue / 60) % 2 - 1)), m = lit - c / 2;
-    const q = hue < 60 ? [c, x, 0] : hue < 120 ? [x, c, 0] : hue < 180 ? [0, c, x] : hue < 240 ? [0, x, c] : hue < 300 ? [x, 0, c] : [c, 0, x];
-    return [Math.round((q[0] + m) * 255), Math.round((q[1] + m) * 255), Math.round((q[2] + m) * 255)];
-  }
-
-  function helmetRgb(r, id, isFocal) {
-    const rc = appRef && appRef.riderController;
-    const pick = (o) => o && o.design && rgbFromHex(o.design.helmet_color);
-    // 1) The rider object itself — bots, other humans, and focal alike carry
-    //    their own design on the rider struct; this is the one to trust.
-    const own = pick(r);
-    if (own) return own;
-    if (!rc) return null;
-    // 2) The focal slot (r can predate rc.focalRider at hand-over).
-    if (isFocal) { const p = pick(rc.focalRider); if (p) return p; }
-    // 3) The human feed (other live humans keyed by id).
-    if (rc.humanFeed && rc.humanFeed.humans) {
-      const e = rc.humanFeed.humans[id] || rc.humanFeed.humans[String(id)];
-      const p = pick(e);
-      if (p) return p;
-    }
-    // Deliberate: NO ego fallback — that is what painted every bot with the
-    // focal rider's helmet color. resolveRgb() falls back to the custom
-    // plate colors instead, which reads as "no helmet color available".
-    return null;
-  }
-
-  let colorCache = null; // parsed custom colors, keyed by the values (avoids re-parsing per frame)
-  const customRgb = (isFocal) => {
-    const key = (S.plateColor || '') + '|' + (S.egoPlateColor || '');
-    if (!colorCache || colorCache.key !== key) {
-      colorCache = { key, ego: rgbFromHex(S.egoPlateColor) || [0, 0, 0], bot: rgbFromHex(S.plateColor) || [0, 0, 0] };
-    }
-    return isFocal ? colorCache.ego : colorCache.bot;
-  };
-  const hashCache = new Map(); // rider seed -> [r,g,b] (stable per rider, so stable too)
-  const resolveRgb = (id, isFocal, r) => {
-    if (S.colorMode === 'random') {
-      const k = String(id);
-      let h = hashCache.get(k);
-      if (!h) { h = hashRgb(id); hashCache.set(k, h); }
-      return h;
-    }
-    if (S.colorMode === 'helmet') { const h = helmetRgb(r, id, isFocal); if (h) return h; }
-    return customRgb(isFocal);
-  };
-  const rgbCss  = rgb => 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + (clamp(S.bgOpacity, 0, 100) / 100).toFixed(2) + ')';
-  const textFor = rgb => ((0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255 > 0.58) ? '#0f172a' : '#ffffff';
-
-  /* ── label ─────────────────────────────────────────────────────────────────── */
-  function labelText(name, st, r) {
-    const parts = [];
-    const sim = (r && r.sim) || {};
-    // A stat is "available" when it is present and finite — deliberately
-    // INCLUDING 0 (stopped at the lights: 0 W / 0 rpm should still show).
-    // Stats that are unreported (absent / not a number) stay hidden.
-    const avail = (v) => v != null && Number.isFinite(+v);
-    const pwr = avail(sim.power) ? +sim.power
-            : (st && avail(st.power) ? +st.power : null);
-    if (S.showPower && pwr != null) parts.push(fmtInt(pwr) + ' W');
-    if (S.showWkg && pwr != null) {
-      const massG = (r && r.config && r.config.mass) || (r && r.userData && r.userData.weight) || 75000;
-      const w = (st && avail(st.wkg)) ? +st.wkg : (pwr * 1000) / massG;
-      parts.push('(' + fmt1(w) + ' W/kg)');
-    }
-    if (st) {
-      if (S.showSpeed   && avail(st.speed))     parts.push(fmt1(st.speed)   + ' km/h');
-      if (S.showCadence && avail(st.cadence))   parts.push(fmtInt(st.cadence)   + ' rpm');
-      if (S.showHeart   && avail(st.heartRate)) parts.push(fmtInt(st.heartRate) + ' bpm');
-      if (S.showGap     && avail(st.gap))       parts.push('+' + fmt1(st.gap) + ' s');
-      if (S.showLap     && avail(st.lapCount))  parts.push('Lap ' + fmtInt(st.lapCount));
-    }
-    return parts.length ? name + '  •  ' + parts.join('  •  ') : name;
-  }
-
-  /* ── live preview in the cog menu ──────────────────────────────────────────── */
-  const SAMPLE = { power: 210, wkg: 2.8, speed: 37.4, cadence: 88, heartRate: 152, gap: 12.4, lapCount: 8 };
-  function paintPreview(slot) {
-    if (!slot) { log('preview: hidden (slot=null)'); return; } // nothing to tear down (static sample, no timers)
-    const mk = (name, rgb) => {
-      const el = document.createElement('div');
-      el.className = 'np np-sample';
-      el.style.background = rgbCss(rgb);
-      el.style.color = textFor(rgb);
-      el.style.fontSize = px(S.fontSize);
-      el.textContent = labelText(name, SAMPLE, null);
-      return el;
-    };
-    // helmet colors can't be sampled out of the game; preview with the custom colors
-    const paintNow = () => {
-      slot.replaceChildren(mk('Josef Nilsson', customRgb(true)), mk('Alex Kim', customRgb(false)));
-    };
-    paintNow();
-    log('preview painted: ' + slot.children.length + ' sample(s)');
-    // The UI fires this the instant a save lands, but our cached copy of the
-    // settings may still be resolving — repaint once with the server's value.
-    try { terra.settings.all().then(applyS).then(paintNow).catch(() => {}); } catch (e) {}
-  }
-  try { terra.settings.preview(paintPreview); } catch (e) { /* older Terra core */ }
-
-  /* ── plates ────────────────────────────────────────────────────────────────── */
-  /** map of rider identity → live plate element. */
-  const plates = new Map();
-  /** last identity we saw in the frame; used to drop plates no longer on screen. */
-  let lastActive = new Set();
-  let cleanRef   = null;
-  let cleaned    = false;
-
-  /* ── find window.btApp (poll via rAF until the game exposes it) ──────────── */
-  function waitForBT(ms = 20000) {
-    return new Promise((resolve, reject) => {
-      const t0 = performance.now();
-      const poke = () => {
-        const app = window.btApp;
-        if (app && typeof app.addFeature === 'function') return resolve(app);
-        if (performance.now() - t0 > ms) return reject(new Error('btApp not found within ' + ms + 'ms'));
-        requestAnimationFrame(poke);
+      // lowest bottom edge >= going upward from `bottom0` where [l,r]x[bottom-eh,bottom] is free
+      const rise = (l, r, eh, bottom0) => {
+        let bottom = bottom0, moved = true, guard = placed.length + 2;
+        while (moved && guard-- > 0) {
+          moved = false;
+          for (const p of placed) {
+            if (l < p.r && r > p.l && bottom - eh < p.b && bottom > p.t) { bottom = p.t - gap; moved = true; }
+          }
+        }
+        return bottom;
       };
-      poke();
-    });
-  }
 
-  /* ── render loop (installed via addFeature) ───────────────────────────────── */
-  function makeFeature(app) {
-    const rc = () => app && app.riderController;
-
-    return {
-      frame(frameState) {
-        if (cleaned) return;
-        const cam  = frameState && frameState.camera;
-        const R    = rc();
-        const vp   = cam  && cam.viewProj;
-        if (!vp || !R) return;
-
-        const lift   = clamp(S.plateHeight, 0.5, 4);   // metres above the rider
-        const maxD   = num(S.maxDist, 100);            // 0 = unlimited
-        const showEgo = !!S.showEgo;
-
-        const [ox, oz] = (frameState.origin && frameState.origin.length >= 2)
-          ? [frameState.origin[0], frameState.origin[1]] : [0, 0];
-        const hideFocal = !!(frameState.rig   && frameState.rig.hideFocalRider);
-        const W          = window.innerWidth  || document.documentElement.clientWidth;
-        const H          = window.innerHeight || document.documentElement.clientHeight;
-
-        /* ── build this frame's rider list (focal + bots), deduped ───────── */
-        const focal = R.focalRider || R.ego;
-        const focalIsEgo = (R.ego !== undefined && R.ego !== null) && focal === R.ego;
-        const list  = [];
-        if (showEgo && focal && focal.sim) list.push({ r: focal, focal: true });
-        for (const r of (R.riders || [])) {
-          if (!r || !r.sim) continue;
-          if (r === focal) continue;                    // already pushed above
-          list.push({ r, focal: false });
+      const nSteps = spread ? Math.floor(MAX_SPREAD / SPREAD_STEP) : 0;
+      for (const e of entries) {
+        const el = e.el;
+        const ew = el._npSize.w * e.sc, eh = el._npSize.h * e.sc;
+        let bestDx = 0, bestBottom = e.sy;
+        if (avoid) {
+          const prevDx = el._npDxT || 0;
+          let bestCost = Infinity;
+          for (let i = 0; i <= 2 * nSteps; i++) {          // order: 0, +1, -1, +2, -2 ... (0 wins ties)
+            const k = i === 0 ? 0 : (i % 2 ? (i + 1) / 2 : -i / 2);
+            const dx = k * SPREAD_STEP;
+            const l = e.sx + dx - ew / 2, r = l + ew;
+            const bottom = rise(l, r, eh, e.sy);
+            let cost = (e.sy - bottom) + SIDE_W * Math.abs(dx) + STICKY * Math.abs(dx - prevDx);
+            if (bottom - eh < 0)  cost += 1000;            // would leave the top of the screen
+            if (l < 0 || r > W)   cost += 1000;            // would leave the sides
+            if (cost < bestCost) { bestCost = cost; bestDx = dx; bestBottom = bottom; }
+          }
         }
+        placed.push({ l: e.sx + bestDx - ew / 2, r: e.sx + bestDx + ew / 2, t: bestBottom - eh, b: bestBottom });
+        el._npDxT = bestDx;
 
-        const active = new Set();
-        const drop = el => { if (el && el.parentNode) el.remove(); };
-        const focalPos = (focal && focal.sim) ? focal.sim.midPosition : null;
+        // ease toward the target so plates glide instead of popping between slots
+        const tgtY = e.sy - bestBottom;
+        const curY = el._npOff || 0, curX = el._npDx || 0;
+        const dY = tgtY - curY, dX = bestDx - curX;
+        el._npOff = Math.abs(dY) < 0.5 ? tgtY   : curY + dY * 0.35;
+        el._npDx  = Math.abs(dX) < 0.5 ? bestDx : curX + dX * 0.35;
+        const x = e.sx + el._npDx, y = e.sy - el._npOff;
+        el.style.transform =
+        'translate3d(' + x.toFixed(1) + 'px, ' + y.toFixed(1) + 'px, 0) ' +
+        'translate(-50%, -100%) scale(' + e.sc.toFixed(3) + ')';
 
-        for (const { r, focal: isFocal } of list) {
-          const sim = r.sim;
-          if (sim.curLod === 0) continue;               // game has culled this rider
-          if (isFocal && hideFocal) continue;           // first-person: focal isn't on screen
-          if (isFocal && !showEgo) continue;            // plate hidden by settings
-
-          /* ── range gate: skip non-focal riders farther than maxD from focal ── */
-          if (!isFocal && maxD > 0 && focalPos) {
-            const dx = sim.midPosition.x - focalPos.x;
-            const dy = sim.midPosition.y - focalPos.y;
-            const dz = sim.midPosition.z - focalPos.z;
-            if (Math.sqrt(dx*dx + dy*dy + dz*dz) > maxD) {
-              const id0 = (sim.id != null) ? sim.id : sim.athleteId;
-              const el0 = plates.get(id0);
-              if (el0) el0.style.display = 'none';
-              continue;
-            }
+        // leader line: plate's bottom edge -> a point on the rider's body (not the floating anchor)
+        let ln = el._npLine, dot = el._npDot;
+        if (wantLines && (el._npOff > LINE_MIN || Math.abs(el._npDx) > LINE_MIN)) {
+          if (!ln) {
+            ln = document.createElementNS(SVGNS, 'line');
+            ln.setAttribute('class', 'np-leader');
+            lineLayer.appendChild(ln);
+            el._npLine = ln;
+            dot = document.createElementNS(SVGNS, 'circle');
+            dot.setAttribute('class', 'np-leader-dot');
+            dot.setAttribute('r', '2');
+            lineLayer.appendChild(dot);
+            el._npDot = dot;
           }
-
-          const id = (sim.id != null) ? sim.id : sim.athleteId;
-          if (id != null) active.add(id);
-
-          /* ── world → origin-relative → clip → NDC ─────────────────────── */
-          const rx = sim.midPosition.x - ox;
-          const ry = sim.midPosition.y + lift;
-          const rz = sim.midPosition.z - oz;
-          const w  = vp[3] * rx + vp[7] * ry + vp[11] * rz + vp[15];
-          let el = plates.get(id);   // NOTE: `let` — reassigned on lazy plate creation below
-          if (w <= NEAR_W || !Number.isFinite(w)) { if (el) el.style.display = 'none'; continue; }
-          const iw = 1 / w;
-          const nx = (vp[0] * rx + vp[4] * ry + vp[8] * rz  + vp[12]) * iw;
-          const ny = (vp[1] * rx + vp[5] * ry + vp[9] * rz  + vp[13]) * iw;
-          if (!Number.isFinite(nx) || !Number.isFinite(ny)) { if (el) el.style.display = 'none'; continue; }
-          if (Math.abs(nx) > HORIZON_PAD || Math.abs(ny) > HORIZON_PAD) { if (el) el.style.display = 'none'; continue; }
-
-          /* ── label ────────────────────────────────────────────────────── */
-          const st = statsFor(id, isFocal, focalIsEgo, r);
-          const text = labelText(nameFor(r, isFocal, id), st, r);
-          if (el) {
-            if (el.textContent !== text) el.textContent = text;
-          } else {                    // lazy-create (also survives a page navigation)
-            el = document.createElement('div');
-            el.className = 'np' + (isFocal ? ' np-focal' : '');
-            el.style.display = 'none';
-            ov.appendChild(el);
-            plates.set(id, el);
+          let ty = e.sy;                                   // fallback: anchor
+          if (e.footY != null) {
+            const ppm = (e.footY - e.sy) / lift;
+            if (ppm > 0) ty = e.footY - LEADER_H * ppm;
           }
-
-          /* ── colors (per mode; re-applied only when they change) ────────── */
-          const rgb = resolveRgb(id, isFocal, r);
-          const bg = rgbCss(rgb), tx = textFor(rgb);
-          const key = bg + '|' + tx;
-          if (el._npStyle !== key) {
-            el.style.background = bg;
-            el.style.color = tx;
-            el._npStyle = key;
-          }
-
-          /* ── position + scale ─────────────────────────────────────────── */
-          const sx = (nx * 0.5 + 0.5) * W;
-          const sy = (1 - (ny * 0.5 + 0.5)) * H;
-          const sc = Math.max(SCALE_MIN, Math.min(SCALE_MAX, SCALE_NEAR_W / Math.max(SCALE_NEAR_W, w)));
-          el.style.display   = 'block';
-          el.style.transform =
-            'translate3d(' + sx.toFixed(1) + 'px, ' + sy.toFixed(1) + 'px, 0) ' +
-            'translate(-50%, -100%) scale(' + sc.toFixed(3) + ')';
+          const half = ew / 2;
+          const ax = Math.max(x - half + 6, Math.min(x + half - 6, e.sx));  // attach where the plate is closest to the rider
+          ln.setAttribute('x1', ax.toFixed(1)); ln.setAttribute('y1', y.toFixed(1));
+          ln.setAttribute('x2', e.sx.toFixed(1)); ln.setAttribute('y2', ty.toFixed(1));
+          dot.setAttribute('cx', e.sx.toFixed(1)); dot.setAttribute('cy', ty.toFixed(1));
+          ln.style.display = ''; dot.style.display = '';
+        } else if (ln) {
+          ln.style.display = 'none'; dot.style.display = 'none';
         }
-
-        /* ── drop plates whose rider is no longer in the frame ──────────── */
-        for (const [id, el] of plates) if (!active.has(id)) { drop(el); plates.delete(id); }
-        lastActive = active;
       }
-    };
-  }
+      // plates that aren't laid out this frame (range-gated, off-screen, empty) shouldn't keep a line
+      const laidOut = new Set(entries.map(e => e.el));
+      for (const el of plates.values()) if (el._npLine && !laidOut.has(el)) { el._npLine.style.display = 'none'; el._npDot.style.display = 'none'; }
 
-  /* ── cleanup ──────────────────────────────────────────────────────────────── */
-  function cleanup() {
-    if (cleaned) return;
-    cleaned = true;
-    if (cleanRef) { try { cleanRef(); } catch (e) { /* ignore */ } cleanRef = null; }
-    for (const el of plates.values()) { if (el.parentNode) el.remove(); }
-    plates.clear();
-    lastActive.clear();
-    statsById.clear();
-    if (ov.parentNode) ov.remove();
-    if (chip.parentNode) chip.remove();
-    for (const k of ['__nameplates']) { try { delete window[k]; } catch (e) {} }
-    log('nameplates cleaned up');
-  }
-  try { if (typeof terra.onCleanup === 'function') terra.onCleanup(cleanup); } catch (e) {}
-  try { window.addEventListener('pagehide', cleanup, { once: true }); } catch (e) {}
-
-  /* ── boot ─────────────────────────────────────────────────────────────────── */
-  try {
-    appRef = await waitForBT();
-    log('btApp acquired; installing nameplate feature (polling done)');
-  } catch (err) {
-    log('[nameplates] btApp not found after waiting.\n' +
-        '  Terra ships an auto-breakpoint for exactly this; set TERRA_NO_BT_BREAKPOINT=1\n' +
-        '  to disable it, or pause manually and set `window.btApp = this`.');
-    log('  original error: ' + err.message);
-    return;   // leave the (invisible) overlay + ⚙ chip in place for later re-injection
-  }
-
-  cleanRef = appRef.addFeature((scope, env) => makeFeature(appRef));
-  log('nameplates ready');
-
-  /* ── small dev/ops API (biketerra-logger & friends rely on this) ──────────── */
-  window.__nameplates = {
-    get plateCount() { return plates.size; },
-    get lastActive() { return Array.from(lastActive); },
-    // kept as a proxy for the cog-menu setting so existing callers keep working
-    maxDist: (v) => terra.settings.set('maxDist', v),
-    stop: cleanup,
+      /* ── drop plates whose rider is no longer in the frame ──────────── */
+      for (const [id, el] of plates) if (!active.has(id)) { drop(el); plates.delete(id); }
+      lastActive = active;
+    }
   };
+}
+
+/* ── cleanup ──────────────────────────────────────────────────────────────── */
+function cleanup() {
+  if (cleaned) return;
+  cleaned = true;
+  if (cleanRef) { try { cleanRef(); } catch (e) { /* ignore */ } cleanRef = null; }
+  for (const el of plates.values()) { if (el.parentNode) el.remove(); }
+  plates.clear();
+  lastActive.clear();
+  statsById.clear();
+  if (ov.parentNode) ov.remove();
+  if (chip.parentNode) chip.remove();
+  for (const k of ['__nameplates']) { try { delete window[k]; } catch (e) {} }
+  log('nameplates cleaned up');
+}
+try { if (typeof terra.onCleanup === 'function') terra.onCleanup(cleanup); } catch (e) {}
+try { window.addEventListener('pagehide', cleanup, { once: true }); } catch (e) {}
+
+/* ── boot ─────────────────────────────────────────────────────────────────── */
+try {
+  appRef = await waitForBT();
+  log('btApp acquired; installing nameplate feature (polling done)');
+} catch (err) {
+  log('[nameplates] btApp not found after waiting.\n' +
+  '  Terra ships an auto-breakpoint for exactly this; set TERRA_NO_BT_BREAKPOINT=1\n' +
+  '  to disable it, or pause manually and set `window.btApp = this`.');
+  log('  original error: ' + err.message);
+  return;   // leave the (invisible) overlay + ⚙ chip in place for later re-injection
+}
+
+cleanRef = appRef.addFeature((scope, env) => makeFeature(appRef));
+log('nameplates ready');
+
+/* ── small dev/ops API (biketerra-logger & friends rely on this) ──────────── */
+window.__nameplates = {
+  get plateCount() { return plates.size; },
+ get lastActive() { return Array.from(lastActive); },
+ // kept as a proxy for the cog-menu setting so existing callers keep working
+ maxDist: (v) => terra.settings.set('maxDist', v),
+ stop: cleanup,
+};
 })();

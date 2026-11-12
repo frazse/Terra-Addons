@@ -12,7 +12,7 @@
   inset: 0;
   pointer-events: none;
   overflow: hidden;
-  z-index: 2147483645;
+  z-index: 1;
   /* the game's default typeface, with a system fallback */
   font-family: "Overpass", system-ui, -apple-system, "Segoe UI", sans-serif;
 }
@@ -50,7 +50,7 @@
 }
 
 /* Live sample in the cog menu's settings preview slot (Terra renders this into a
-   plain container, so pin it down instead of the game's absolute positioning). */
+ *  plain container, so pin it down instead of the game's absolute positioning). */
 .np-sample {
   position: static;
   display: inline-block;
@@ -59,7 +59,7 @@
 }
 
 /* ⚙ settings shortcut — ride pages have no header, so a small floating button.
-   z-index sits just under the nameplate overlay and far below the Terra modal. */
+ *  z-index sits just under the nameplate overlay and far below the Terra modal. */
 .np-chip {
   position: fixed;
   right: 14px;
@@ -80,3 +80,23 @@
   /* NOTE: no backdrop-filter here — it breaks the game's GPU on the Vulkan ANGLE stack */
 }
 .np-chip:hover { color: #ffffff; border-color: #55555f; }
+
+/* leader lines (plate -> rider) for plates that were moved aside; sits under the plates */
+.np-lines {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+.np-leader {
+  stroke: rgba(255, 255, 255, 0.75);
+  stroke-width: 1;
+  stroke-linecap: round;
+}
+.np-leader-dot {
+  fill: rgba(255, 255, 255, 0.9);
+  stroke: rgba(0, 0, 0, 0.5);
+  stroke-width: 0.5;
+}
