@@ -30,8 +30,14 @@ function flash(t) {
   flashTimer = setTimeout(() => { savedEl.textContent = ''; }, 1500);
 }
 function updateStatus() {
-  if (!pill) return;
   const n = count(), waiting = devs.size - n;
+  // Published for other addons (auto-trainer reads it as a bike/row signal: the controller
+  // being out means the bike setup is stowed, i.e. a rowing session).
+  try {
+    window.__zwiftRideState = { connected: n, waiting };
+    terra.bus.emit('zwift-ride:state', window.__zwiftRideState);
+  } catch {}
+  if (!pill) return;
   statusEl.textContent = `${n} controller(s) connected` + (waiting ? `, ${waiting} waiting` : '');
   pillDot.className = 'btz-dot ' + (n > 0 ? 'ok' : devs.size ? 'wait' : 'none');
   pillLabel.textContent = n > 0 ? `Controller \u00b7 ${n}` : devs.size ? 'Controller: waiting' : 'Pair controller';
