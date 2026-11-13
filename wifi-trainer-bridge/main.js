@@ -930,6 +930,23 @@ if (typeof navigator !== 'undefined' && navigator.bluetooth && typeof navigator.
     const origRequestDevice = navigator.bluetooth.requestDevice;
     navigator.bluetooth.requestDevice = async function (options) {
       if (isTrainerRequest(options)) {
+        // auto-trainer (bike vs row) decides whether this is a rowing session. It's the
+        // ONLY signal that says "row" (a bike ride resolves the instant the controller
+        // links), so give it a bounded moment to publish window.__terraMode before we
+        // decide. In the shim's auto-pair path this is already resolved (it awaits
+        // __terraModeReady first) → a no-op; it only costs time on an early manual pair.
+        if (window.__terraModeReady && window.__terraMode !== 'row') {
+          await Promise.race([
+            Promise.resolve(window.__terraModeReady).catch(() => {}),
+            new Promise((r) => setTimeout(r, 4000)),
+          ]);
+        }
+        // During a rowing session the Kickr mock must not drive the game — stand down and
+        // let the platform pair the rower instead.
+        if (window.__terraMode === 'row') {
+          bridge.log('row mode — standing down, deferring the trainer pairing to the platform');
+          return origRequestDevice.call(this, options);
+        }
         // The game hands every pairing request with its whole service registry
         // as filters and puts the devices it ALREADY KNOWS in exclusionFilters.
         // So when our mock is on the exclusion list this click is not "give me
