@@ -93,6 +93,7 @@ function setRideEnabled(v) {
 const ARROWS = { ArrowUp: '\u2191', ArrowDown: '\u2193', ArrowLeft: '\u2190', ArrowRight: '\u2192' };
 function keyLabel(k) {
   if (!k) return '\u2014';
+  if (k.code && k.code.startsWith('Cam:')) return CAM_LABEL[k.code.slice(4)] || 'Camera';
   if (ARROWS[k.code]) return ARROWS[k.code];
   if (k.key === ' ') return 'Space';
   if (k.key && k.key.length === 1) return k.key.toUpperCase();
@@ -109,6 +110,8 @@ function refresh(name) {
   const inherit = layer !== 'normal';
   r.slot.textContent = arr && arr.length ? keyLabel(arr[0]) : inherit ? 'as normal' : '\u2014';
   r.slot.classList.toggle('btz-inherit', inherit && !(arr && arr.length));
+  const a0 = arr && arr[0];
+  r.cam.value = a0 && a0.code.startsWith('Cam:') ? a0.code.slice(4) : '';
   if (r.sel.dataset.layer !== layer) fillSelect(r.sel);
   r.sel.value = layer === 'normal' ? (b || 'none') : (b === undefined ? 'inherit' : b);
 }
@@ -186,10 +189,21 @@ function buildTable(tbody) {
       if (sel.value === 'inherit') delete m[name]; else m[name] = sel.value;
       saveCfg();
     });
+    const cam = h('select', { title: 'Camera action (instead of a key) on ride pages' });
+    cam.append(h('option', { value: '' }, '\u2014'), ...CAM_ACTIONS.map(([v, t]) => h('option', { value: v }, t)));
+    cam.addEventListener('change', () => {
+      if (cam.value) rideMap(layer)[name] = [{ code: 'Cam:' + cam.value, key: 'cam' }];
+      else {
+        const cur = (rideMap(layer)[name] || [])[0];
+        if (cur && cur.code.startsWith('Cam:')) { if (layer === 'normal') cfg.ride[name] = []; else delete rideMap(layer)[name]; }
+      }
+      saveCfg();
+      refresh(name);
+    });
     const labelTd = h('td', {}, label);
-    const tr = h('tr', { id: 'btz-row-' + name }, labelTd, h('td', {}, slot, x), h('td', {}, sel));
+    const tr = h('tr', { id: 'btz-row-' + name }, labelTd, h('td', {}, slot, x), h('td', {}, cam), h('td', {}, sel));
     tbody.append(tr);
-    rows[name] = { slot, sel, tr, label: labelTd };
+    rows[name] = { slot, sel, tr, label: labelTd, cam };
     refresh(name);
   }
 }
@@ -275,8 +289,8 @@ function buildPanel() {
     h('h4', {}, 'Button mapping ', savedEl),
     h('p', {}, 'Click a key slot, then press the key to send during a ride. The row lights up while you press the matching button or move a lever. Changes save automatically.'),
     tabsEl, hintEl,
-    h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Input'), h('th', {}, 'Ride key'), h('th', {}, 'On site pages'))), tbody),
-    h('p', {}, h('button', { class: 'btz-secondary', onclick: () => {
+    h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Input'), h('th', {}, 'Ride key'), h('th', {}, 'Camera'), h('th', {}, 'On site pages'))), tbody),
+    h('p', {}, h('button', { class: 'btz-secondary', title: 'Makes LB a modifier: LB + D-pad orbits/tilts, LB + shifters zoom', onclick: () => applyCameraPreset('powerup_l') }, 'Camera preset on LB'), ' ', h('button', { class: 'btz-secondary', onclick: () => {
       cfg = defaultCfg();
       layer = 'normal';
       releaseAll();

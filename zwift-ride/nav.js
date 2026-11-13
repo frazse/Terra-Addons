@@ -1,8 +1,11 @@
 /* ---------------- ride mode: key emulation ---------------- */
 const held = new Map(); // code -> {k, n}
-const fire = (type, k) => window.dispatchEvent(new KeyboardEvent(type, {
-  code: k.code, key: k.key, bubbles: true, cancelable: true, shiftKey: k.code.startsWith('Shift'),
-}));
+const fire = (type, k) => {
+  if (k.code.startsWith('Cam:')) { camSet(k.code.slice(4), type === 'keydown'); return; } // camera.js
+  window.dispatchEvent(new KeyboardEvent(type, {
+    code: k.code, key: k.key, bubbles: true, cancelable: true, shiftKey: k.code.startsWith('Shift'),
+  }));
+};
 function press(k) { const e = held.get(k.code) || { k, n: 0 }; e.n++; held.set(k.code, e); if (e.n === 1) fire('keydown', k); }
 function release(k) { const e = held.get(k.code); if (!e) return; if (--e.n <= 0) { held.delete(k.code); fire('keyup', k); } }
 

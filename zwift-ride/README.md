@@ -26,3 +26,13 @@ other buttons. Pressing and releasing the modifier on its own (a tap) runs the m
 
 Example: LB tab, D-pad left -> click the key slot and press the key Biketerra uses for "pan camera left".
 Normal: D-pad left = left arrow. LB held + D-pad left = pan camera left.
+
+## Camera control (ride pages)
+Each row in the panel has a **Camera** column: pick Orbit / Tilt / Zoom instead of a key. It works in every layer,
+so the usual setup is a modifier layer. **Camera preset on LB** does it in one click: LB becomes a modifier and,
+while it is held, D-pad left/right orbits, D-pad up/down tilts, RS1/RS2 zoom in and LS1/LS2 zoom out.
+
+Orbit/tilt emulate a middle-button drag on the largest canvas on the page (movement continues while held);
+zoom emulates scroll-wheel ticks. Tuning constants are at the top of camera.js (`CAM_DRAG_SPEED`,
+`CAM_WHEEL_STEP`, `CAM_WHEEL_MS`). If the page ignores the events or throws, set `CAM_EVENTS` to `'mouse'` or
+`'pointer'` and check the Terra console.
