@@ -1,11 +1,11 @@
-/* sbs3d v0.7 — DEV throwaway.
- * Single-window double-render WebGPU stereo 3D + 50vw Left-Eye Root & Right-Eye Mirror
- * + Stereo 3D Mouse Cursor & Right-Eye -> Left-Eye Interactive Input Bridge.
+/* sbs3d v0.8 — Side-by-Side Stereo 3D for Viture XR glasses.
+ * Single-window double-render WebGPU stereo 3D + 3D Depth Scale & Convergence Distance
+ * + 50vw Left-Eye Root & Right-Eye Mirror + Stereo 3D Mouse Cursor & Input Bridge.
  */
 (async function () {
   'use strict';
 
-  const log = (...a) => { try { terra.log(...a); } catch (e) { try { console.log('[sbs3d]', ...a); } catch (e2) {} } };
+  const log = (...a) => { try { terra.log('[sbs3d]', ...a); } catch (e) { try { console.log('[sbs3d]', ...a); } catch (e2) {} } };
 
   /* ── state ────────────────────────────────────────────────────────────────── */
   const S = {
@@ -16,13 +16,51 @@
  savedGetTex: null,
  enabled: true,
  hudMirror: true,
- hudDepth: 6,         // px inward convergence so HUD floats slightly in front
- ipd: 0.060,          // metres; Viture IPD ≈ 58–72mm, default 60
- swap: false,          // if parallax is inverted, flip left/right
+ hudDepth: 6,          // px inward convergence so HUD floats slightly in front
+ ipd: 0.060,           // metres; physical Viture IPD ≈ 58–72mm, default 60mm
+ depthScale: 1.5,      // 3D depth multiplier (0.0x = flat 2D, 1.0x = 1:1, 1.5x–5.0x = enhanced 3D depth)
+convergence: 6.0,     // metres; zero-parallax distance (objects at this distance sit at screen depth)
+swap: false,          // if parallax is inverted, flip left/right
  errors: 0, warned: false, disabled: false, err: null,
  frames: 0,
  el: null, statusEl: null,
   };
+
+  /* ── persistent storage ───────────────────────────────────────────────────── */
+  let saveTimer = 0;
+  try {
+    if (typeof terra !== 'undefined' && terra.storage?.get) {
+      const saved = await terra.storage.get('sbs3dConfig', null);
+      if (saved && typeof saved === 'object') {
+        if (typeof saved.enabled === 'boolean') S.enabled = saved.enabled;
+        if (typeof saved.hudMirror === 'boolean') S.hudMirror = saved.hudMirror;
+        if (Number.isFinite(saved.hudDepth)) S.hudDepth = saved.hudDepth;
+        if (Number.isFinite(saved.ipd)) S.ipd = saved.ipd;
+        if (Number.isFinite(saved.depthScale)) S.depthScale = saved.depthScale;
+        if (Number.isFinite(saved.convergence)) S.convergence = saved.convergence;
+        if (typeof saved.swap === 'boolean') S.swap = saved.swap;
+      }
+    }
+  } catch (e) {}
+
+  function scheduleSave() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      try {
+        if (typeof terra !== 'undefined' && terra.storage?.set) {
+          terra.storage.set('sbs3dConfig', {
+            enabled: S.enabled,
+            hudMirror: S.hudMirror,
+            hudDepth: S.hudDepth,
+            ipd: S.ipd,
+            depthScale: S.depthScale,
+            convergence: S.convergence,
+            swap: S.swap,
+          }).catch?.(() => {});
+        }
+      } catch (e) {}
+    }, 350);
+  }
 
   function rightAxis(cam) {
     try {
@@ -44,6 +82,21 @@
   function rotationFromView(cam) {
     const v = cam.view;
     return [v[0], v[4], v[8], v[1], v[5], v[9], v[2], v[6], v[10]];
+  }
+
+  // Rotate camera basis [R(0..2), U(3..5), B(6..8)] around its local Up axis by `angleRad`
+  // for toe-in convergence at `S.convergence` metres.
+  function yawBasisAroundUp(rot, angleRad) {
+    if (!angleRad || Math.abs(angleRad) < 1e-6) return rot;
+    const c = Math.cos(angleRad), s = Math.sin(angleRad);
+    const rx = rot[0], ry = rot[1], rz = rot[2];
+    const ux = rot[3], uy = rot[4], uz = rot[5];
+    const bx = rot[6], by = rot[7], bz = rot[8];
+    return [
+      rx * c + bx * s, ry * c + by * s, rz * c + bz * s,
+      ux,              uy,              uz,
+      bx * c - rx * s, by * c - ry * s, bz * c - rz * s,
+    ];
   }
 
   function bumpError(stage, e) {
@@ -90,7 +143,6 @@
     }
     const clone = srcNode.cloneNode(false);
     if (clone.nodeType === 1) {
-      // Preserve clone.id so #id CSS rules (like the FPS counter addon) style the right-eye clone!
       if (srcNode.tagName === 'CANVAS') {
         canvasPairs.push({ src: srcNode, dst: clone });
       }
@@ -328,7 +380,7 @@
   function forwardRightEyeEvent(e) {
     if (forwardingEvent || !S.enabled || !S.hudMirror || !e.isTrusted) return;
     const halfW = window.innerWidth * 0.5;
-    if (e.clientX < halfW) return; // Already on the real Left Eye UI
+    if (e.clientX < halfW) return;
 
     const lx = rightToLeftX(e.clientX);
     const ly = e.clientY;
@@ -502,7 +554,8 @@
     S.format = D.format || (navigator.gpu && navigator.gpu.getPreferredCanvasFormat ? navigator.gpu.getPreferredCanvasFormat() : 'bgra8unorm');
 
     S.savedGetTex = S.ctx.getCurrentTexture;
-    const realRender = eng.render;
+    const realRender = window.__btRealRender || eng.render;
+    window.__btRealRender = realRender; // Expose raw engine render so pip-cam can render single-eye views cleanly!
 
     startHudObserver();
 
@@ -537,18 +590,35 @@
       }
 
       const r = rightAxis(cam);
-      const off = (S.ipd / 2) * (S.swap ? -1 : 1);
-      const base = { rotation: orig.rotation, fov: orig.fov, aspect: S.aspect, near: orig.near, far: orig.far, zoom: orig.zoom, origin: orig.origin };
+      // Effective stereo separation = IPD × 3D Depth Scale
+      const effIpd = S.ipd * S.depthScale;
+      const off = (effIpd / 2) * (S.swap ? -1 : 1);
+
+      // Toe-in convergence angle so objects at `S.convergence` metres sit at zero parallax (screen plane)
+      const convDist = Math.max(0.5, S.convergence || 6.0);
+      const toeAngle = Math.atan2(off, convDist);
+      const rotL = yawBasisAroundUp(orig.rotation, -toeAngle);
+      const rotR = yawBasisAroundUp(orig.rotation, +toeAngle);
+
+      const base = { fov: orig.fov, aspect: S.aspect, near: orig.near, far: orig.far, zoom: orig.zoom, origin: orig.origin };
       let frameOK = false;
 
       try {
         // LEFT eye → left offscreen
-        cam.update({ worldPosition: { x: orig.wp.x - r[0] * off, y: orig.wp.y, z: orig.wp.z - r[2] * off }, ...base });
+        cam.update({
+          worldPosition: { x: orig.wp.x - r[0] * off, y: orig.wp.y - r[1] * off, z: orig.wp.z - r[2] * off },
+          rotation: rotL,
+          ...base
+        });
         S.ctx.getCurrentTexture = () => S.left;
         realRender.call(this, fs, rq);
 
         // RIGHT eye → right offscreen
-        cam.update({ worldPosition: { x: orig.wp.x + r[0] * off, y: orig.wp.y, z: orig.wp.z + r[2] * off }, ...base });
+        cam.update({
+          worldPosition: { x: orig.wp.x + r[0] * off, y: orig.wp.y + r[1] * off, z: orig.wp.z + r[2] * off },
+          rotation: rotR,
+          ...base
+        });
         S.ctx.getCurrentTexture = () => S.right;
         realRender.call(this, fs, rq);
         frameOK = true;
@@ -556,7 +626,7 @@
         bumpError('render', e);
       } finally {
         try { S.ctx.getCurrentTexture = S.savedGetTex; } catch (e2) {}
-        try { cam.update({ worldPosition: orig.wp, ...base, aspect: orig.aspect }); } catch (e2) {}
+        try { cam.update({ worldPosition: orig.wp, rotation: orig.rotation, ...base, aspect: orig.aspect }); } catch (e2) {}
       }
 
       if (frameOK && S.compositePipeline && realBackbufTex) {
@@ -630,15 +700,20 @@
     '}' +
     '.sbs3d-chip{position:fixed;top:10px;left:96px;z-index:2147483647;background:#0aa;color:#04141a;' +
     'border:1px solid #0dd;border-radius:8px;padding:6px 11px;cursor:pointer;font:600 12px/1 -apple-system,system-ui,sans-serif;box-shadow:0 4px 14px rgba(0,0,0,.4);}' +
-    '.sbs3d-ov{position:fixed;top:44px;left:96px;z-index:2147483647;width:340px;' +
+    '.sbs3d-ov{position:fixed;top:44px;left:96px;z-index:2147483647;width:390px;' +
     'display:none;flex-direction:column;gap:8px;background:rgba(6,22,26,0.96);color:#cfffff;border:1px solid #0d7;border-radius:10px;' +
-    'padding:12px;box-shadow:0 12px 40px rgba(0,0,0,.5);font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;}' +
-    '.sbs3d-ov .row{display:flex;align-items:center;justify-content:space-between;gap:10px;}' +
-    '.sbs3d-ov .row label{flex:1;}' +
-    '.sbs3d-ov input[type=range]{width:130px;}' +
-    '.sbs3d-ov button{background:#0a4;color:#031;border:1px solid #0dd;border-radius:6px;padding:3px 9px;cursor:pointer;font:inherit;}' +
-    '.sbs3d-ov button:hover{background:#0c6;}' +
-    '.sbs3d-ov .st{color:#8fe;font-size:11px;white-space:pre-wrap;}'
+    'padding:12px;box-shadow:0 12px 40px rgba(0,0,0,.5);font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;user-select:none;}' +
+    '.sbs3d-ov .row{display:flex;align-items:center;justify-content:space-between;gap:5px;}' +
+    '.sbs3d-ov .row label{flex:1;color:#9fe;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+    '.sbs3d-ov input[type=range]{width:118px;accent-color:#0dd;cursor:pointer;margin:0;}' +
+    '.sbs3d-ov .sbs-step{padding:1px 5px;font-size:11px;line-height:1.1;background:#09292e;color:#8fe;border:1px solid #078;border-radius:4px;cursor:pointer;}' +
+    '.sbs3d-ov .sbs-val{width:64px;text-align:right;color:#fff;font-size:11px;font-variant-numeric:tabular-nums;cursor:text;padding:1px 4px;border-radius:4px;border:1px solid transparent;background:rgba(0,0,0,0.25);}' +
+    '.sbs3d-ov .sbs-val:hover{border-color:#0aa;background:#04181c;}' +
+    '.sbs3d-ov .sbs-val-edit{width:64px;text-align:right;color:#0ff;font:inherit;font-size:11px;padding:1px 4px;border-radius:4px;border:1px solid #0ff;background:#021014;outline:none;box-sizing:border-box;}' +
+    '.sbs3d-ov button.toggle-btn{background:#0a4;color:#031;border:1px solid #0dd;border-radius:6px;padding:4px 9px;cursor:pointer;font:inherit;font-weight:700;}' +
+    '.sbs3d-ov button.toggle-btn.off{background:#12383d;color:#8cc;border-color:#078;font-weight:400;}' +
+    '.sbs3d-ov button:hover{filter:brightness(1.15);}' +
+    '.sbs3d-ov .st{color:#8fe;font-size:11px;white-space:pre-wrap;border-bottom:1px solid rgba(0,220,220,0.2);padding-bottom:6px;}'
   );
 
   const chip = document.createElement('button'); chip.type = 'button'; chip.id = 'sbs3d-chip'; chip.className = 'sbs3d-chip';
@@ -646,57 +721,157 @@
   const ov = document.createElement('div'); ov.id = 'sbs3d-ov'; ov.className = 'sbs3d-ov';
   const statusEl = document.createElement('div'); statusEl.className = 'st';
   ov.appendChild(statusEl);
-  function addRow(label, control) { const row = document.createElement('div'); row.className = 'row'; const l = document.createElement('label'); l.textContent = label; row.appendChild(l); row.appendChild(control); ov.appendChild(row); }
-  function addToggle(key, label, val, cb) {
-    const b = document.createElement('button'); b.type = 'button'; b.textContent = (val ? 'ON ' : 'OFF ') + label;
-    b.onclick = () => { S[key] = !S[key]; b.textContent = (S[key] ? 'ON ' : 'OFF ') + label; cb && cb(); paintStatus(); };
-    addRow(label, b);
-  }
-  // IPD slider
-  (function () {
-    const inp = document.createElement('input'); inp.type = 'range'; inp.min = 40; inp.max = 80; inp.step = 1; inp.value = Math.round(S.ipd * 1000);
-    const val = document.createElement('span'); val.textContent = Math.round(S.ipd * 1000) + 'mm';
-    const wrap = document.createElement('span'); wrap.appendChild(inp); wrap.appendChild(val);
-    inp.oninput = () => {
-      S.ipd = Number(inp.value) / 1000;
-      inp.setAttribute('value', inp.value);
-      val.textContent = inp.value + 'mm';
+
+  function addSliderRow(label, min, max, step, getVal, setVal, unit, defVal) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const l = document.createElement('label');
+    l.textContent = label;
+    l.title = 'Double-click slider to reset • Click number to type exact value • Shift=10x step, Alt=0.1x step';
+
+    const btnMinus = document.createElement('button');
+    btnMinus.type = 'button';
+    btnMinus.className = 'sbs-step';
+    btnMinus.textContent = '−';
+
+    const inp = document.createElement('input');
+    inp.type = 'range'; inp.min = min; inp.max = max; inp.step = step; inp.value = getVal();
+
+    const btnPlus = document.createElement('button');
+    btnPlus.type = 'button';
+    btnPlus.className = 'sbs-step';
+    btnPlus.textContent = '+';
+
+    const v = document.createElement('span');
+    v.className = 'sbs-val';
+    v.title = 'Click to type exact value';
+    const decimals = (String(step).split('.')[1] || '').length;
+    const fmt = (n) => Number(n).toFixed(decimals) + unit;
+    v.textContent = fmt(getVal());
+
+    const apply = (n, allowOutOfBounds = false) => {
+      if (!Number.isFinite(n)) return;
+      const clamped = allowOutOfBounds ? n : Math.max(min, Math.min(max, n));
+      const clean = Number(clamped.toFixed(4));
+      if (clean < Number(inp.min)) inp.min = clean;
+      if (clean > Number(inp.max)) inp.max = clean;
+      inp.value = clean;
+      setVal(clean);
+      v.textContent = fmt(clean);
       paintStatus();
+      scheduleSave();
     };
-    addRow('IPD', wrap);
-  })();
-  // HUD Stereo Depth slider
-  (function () {
-    const inp = document.createElement('input'); inp.type = 'range'; inp.min = -10; inp.max = 24; inp.step = 1; inp.value = S.hudDepth;
-    const val = document.createElement('span'); val.textContent = S.hudDepth + 'px';
-    const wrap = document.createElement('span'); wrap.appendChild(inp); wrap.appendChild(val);
-    inp.oninput = () => {
-      S.hudDepth = Number(inp.value);
-      inp.setAttribute('value', inp.value);
-      val.textContent = inp.value + 'px';
-      const shift = S.swap ? -S.hudDepth : S.hudDepth;
-      document.documentElement.style.setProperty('--sbs-hud-shift', shift + 'px');
+
+    inp.oninput = () => apply(Number(inp.value), false);
+    inp.ondblclick = () => apply(defVal, true);
+
+    const stepMul = (e) => e.shiftKey ? 10 : (e.altKey || e.ctrlKey) ? 0.1 : 1;
+    btnMinus.onclick = (e) => apply(getVal() - step * stepMul(e), true);
+    btnPlus.onclick = (e) => apply(getVal() + step * stepMul(e), true);
+
+    row.addEventListener('wheel', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const dir = e.deltaY < 0 ? 1 : -1;
+      apply(getVal() + dir * step * stepMul(e), true);
+    });
+
+    v.onclick = (e) => {
+      e.stopPropagation();
+      const edit = document.createElement('input');
+      edit.type = 'text';
+      edit.className = 'sbs-val-edit';
+      edit.value = String(getVal());
+      v.replaceWith(edit);
+      edit.focus();
+      edit.select();
+
+      let done = false;
+      const commit = (save) => {
+        if (done) return;
+        done = true;
+        if (save) {
+          const parsed = parseFloat(edit.value.replace(',', '.'));
+          if (Number.isFinite(parsed)) apply(parsed, true);
+        }
+        edit.replaceWith(v);
+      };
+
+      edit.addEventListener('keydown', (ke) => {
+        ke.stopPropagation();
+        if (ke.key === 'Enter') { ke.preventDefault(); commit(true); }
+        else if (ke.key === 'Escape') { ke.preventDefault(); commit(false); }
+        else if (ke.key === 'ArrowUp') { ke.preventDefault(); edit.value = (parseFloat(edit.value || 0) + step * stepMul(ke)).toFixed(3); }
+        else if (ke.key === 'ArrowDown') { ke.preventDefault(); edit.value = (parseFloat(edit.value || 0) - step * stepMul(ke)).toFixed(3); }
+      });
+      edit.addEventListener('keyup', (ke) => ke.stopPropagation());
+      edit.addEventListener('keypress', (ke) => ke.stopPropagation());
+      edit.addEventListener('blur', () => commit(true));
     };
-    addRow('HUD depth', wrap);
-  })();
-  addToggle('enabled', 'SBS', S.enabled, () => fullRebuildHudMirror());
-  addToggle('hudMirror', 'Dual HUD', S.hudMirror, () => fullRebuildHudMirror());
-  addToggle('swap', 'swap eyes', S.swap, () => fullRebuildHudMirror());
+
+    row.append(l, btnMinus, inp, btnPlus, v);
+    ov.appendChild(row);
+  }
+
+  function addToggle(key, label, cb) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    const l = document.createElement('label');
+    l.textContent = label;
+    const b = document.createElement('button');
+    b.type = 'button';
+    const syncBtn = () => {
+      b.className = 'toggle-btn' + (S[key] ? '' : ' off');
+      b.textContent = (S[key] ? 'ON · ' : 'OFF · ') + label;
+    };
+    syncBtn();
+    b.onclick = () => {
+      S[key] = !S[key];
+      syncBtn();
+      if (cb) cb();
+      paintStatus();
+      scheduleSave();
+    };
+    row.append(l, b);
+    ov.appendChild(row);
+  }
+
+  // 1. 3D Depth Scale slider (0.0x flat -> 5.0x deep stereo)
+  addSliderRow('3D Depth Scale', 0.0, 5.0, 0.05, () => S.depthScale, (v) => { S.depthScale = v; }, 'x', 1.5);
+
+  // 2. 3D Convergence Distance slider (screen-plane distance in metres)
+  addSliderRow('3D Convergence', 1.0, 60.0, 0.25, () => S.convergence, (v) => { S.convergence = Math.max(0.5, v); }, 'm', 6.0);
+
+  // 3. Physical IPD slider (mm)
+  addSliderRow('Eye IPD', 40, 80, 0.5, () => +(S.ipd * 1000).toFixed(1), (v) => { S.ipd = v / 1000; }, 'mm', 60.0);
+
+  // 4. HUD Stereo Depth slider (px)
+  addSliderRow('HUD Pop Depth', -15, 30, 0.5, () => S.hudDepth, (v) => {
+    S.hudDepth = v;
+    const shift = S.swap ? -S.hudDepth : S.hudDepth;
+    document.documentElement.style.setProperty('--sbs-hud-shift', shift + 'px');
+  }, 'px', 6);
+
+  addToggle('enabled', 'SBS 3D', () => fullRebuildHudMirror());
+  addToggle('hudMirror', 'Dual HUD', () => fullRebuildHudMirror());
+  addToggle('swap', 'Swap Eyes', () => fullRebuildHudMirror());
   S.statusEl = statusEl;
 
   function paintStatus() {
     if (!S.statusEl) return;
+    const effMm = Math.round(S.ipd * S.depthScale * 1000);
     let txt = 'eye ' + S.ew + '×' + S.eh + ' (aspect ' + (S.aspect).toFixed(3) + ')\n' +
-    'offscreen ' + S.offW + '×' + S.offH + ' fmt=' + (S.format || '?') + '\n' +
-    (S.disabled ? '❌ DISABLED (' + (S.err || '?') + ')\n' : (S.enabled ? '✅ SBS on\n' : '⏸ SBS off\n')) +
-    'frames=' + S.frames + ' errs=' + S.errors + ' ipd=' + Math.round(S.ipd * 1000) + 'mm' + (S.swap ? ' (swapped)' : '');
+    'effective baseline: ' + effMm + 'mm (' + S.depthScale.toFixed(2) + 'x) · conv: ' + S.convergence.toFixed(1) + 'm\n' +
+    (S.disabled ? '❌ DISABLED (' + (S.err || '?') + ')\n' : (S.enabled ? '✅ SBS on · ' : '⏸ SBS off · ')) +
+    'frames=' + S.frames + (S.swap ? ' (swapped)' : '');
     S.statusEl.textContent = txt;
   }
 
-  chip.onclick = () => { ov.style.display = (ov.style.display === 'block') ? 'none' : 'block'; paintStatus(); };
+  chip.onclick = () => { ov.style.display = (ov.style.display === 'flex') ? 'none' : 'flex'; paintStatus(); };
   document.body.appendChild(chip); document.body.appendChild(ov);
 
   function cleanup() {
+    clearTimeout(saveTimer);
     cleanupStereoPointer();
     try { if (S.ctx && S.savedGetTex) S.ctx.getCurrentTexture = S.savedGetTex; } catch (e) {}
     uninstallSBS();
@@ -739,7 +914,7 @@
     }
     installSBS(eng);
     paintStatus();
-    log('sbs3d installed (ipd ' + Math.round(S.ipd * 1000) + 'mm)');
+    log('sbs3d v0.8 installed (depth ' + S.depthScale + 'x, conv ' + S.convergence + 'm)');
   } catch (err) {
     chip.textContent = '🥽 SBS 3D — err';
     log('sbs3d boot error: ' + ((err && err.message) || err));
