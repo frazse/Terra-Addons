@@ -2,6 +2,15 @@
 const held = new Map(); // code -> {k, n}
 const fire = (type, k) => {
   if (k.code.startsWith('Cam:')) { camSet(k.code.slice(4), type === 'keydown'); return; } // camera.js
+  if (
+    type === 'keydown' &&
+    document.activeElement &&
+    document.activeElement !== document.body &&
+    document.activeElement.tagName !== 'CANVAS' &&
+    !document.activeElement.closest?.('#btz-panel')
+  ) {
+    try { document.activeElement.blur(); } catch {}
+  }
   window.dispatchEvent(new KeyboardEvent(type, {
     code: k.code, key: k.key, bubbles: true, cancelable: true, shiftKey: k.code.startsWith('Shift'),
   }));
@@ -239,10 +248,10 @@ const shown = (el) => {
 };
 
 function findDefault() {
-  const path = location.pathname;
+  const path = location.pathname.replace(/\/+$/, '') || '/';
 
-  // 1. Route / Event detail page: focus "Ride now" / "Sign up" / "Starting pen"
-  if (/\/(events|routes)\/.+/.test(path)) {
+  // 1. Route / Event detail page (/routes/18535 or /events/2718): focus "Ride now" / "Sign up" / "Starting pen"
+  if (/^\/(events|routes)\/[^/]+$/.test(path)) {
     const hits = [...document.querySelectorAll('button, a')].filter((b) => {
       const text = b.textContent.replace(/\s+/g, ' ').trim().toLowerCase();
       const href = b.getAttribute('href') || '';
@@ -258,7 +267,7 @@ function findDefault() {
   }
 
   // 2. Dashboard: focus the first individual upcoming event row
-  if (path === '/dashboard' || path === '/dashboard/') {
+  if (path === '/dashboard') {
     const firstRowTarget = [
       ...document.querySelectorAll('.itin-row .itin-title a, .btz-dash-event-target, .event-row .event-row-title a')
     ].find(shown);
@@ -267,26 +276,42 @@ function findDefault() {
     if (qTile && shown(qTile)) return qTile;
   }
 
-  // 3. Routes list (/routes): focus first route card
-  if (path === '/routes' || path === '/routes/') {
-    const firstRoute = [...document.querySelectorAll('a[href*="/routes/"]')].find(
-      (a) => shown(a) && !a.closest('nav, header')
+  // 3. Routes list (/routes): focus top-left route card (never "Add route" or "Collections")
+  if (path === '/routes') {
+    const firstRoute = [
+      ...document.querySelectorAll('.route-tile a[href*="/routes/"], .postcard a[href*="/routes/"], .grid a[href*="/routes/"]')
+    ].find(
+      (a) =>
+      shown(a) &&
+      !a.closest('nav, header, footer, .list-page-head, .list-page-actions') &&
+      !/\/routes\/(new|add)\b/i.test(a.getAttribute('href') || '')
     );
     if (firstRoute) return firstRoute;
   }
 
-  // 4. Events list (/events): focus first event row
-  if (path === '/events' || path === '/events/') {
-    const firstEv = [...document.querySelectorAll('a[href*="/events/"]')].find(
-      (a) => shown(a) && !a.closest('nav, header') && a.textContent.trim().toLowerCase() !== 'view series'
+  // 4. Events list (/events): focus first event row (never "Add event" or "Series")
+  if (path === '/events') {
+    const firstEv = [...document.querySelectorAll('.itin-row .itin-title a, .itin a[href*="/events/"]')].find(
+      (a) =>
+      shown(a) &&
+      !a.closest('nav, header, footer, .list-page-head, .list-page-actions') &&
+      !/\/events\/(new|add)\b/i.test(a.getAttribute('href') || '') &&
+      a.textContent.trim().toLowerCase() !== 'view series'
     );
     if (firstEv) return firstEv;
   }
-  // 5. Clubs list (/clubs): focus first club card title link
-  if (path === '/clubs' || path === '/clubs/') {
+
+  // 5. Clubs list (/clubs): focus first club card title link (never "Add club")
+  if (path === '/clubs') {
     const firstClub = [
       ...document.querySelectorAll('.postcard .postcard-title a, .club-tile .tile-title a, .grid-cards a[href*="/clubs/"]')
-    ].find((a) => shown(a) && !a.classList.contains('scene'));
+    ].find(
+      (a) =>
+      shown(a) &&
+      !a.classList.contains('scene') &&
+      !a.closest('nav, header, footer, .list-page-head, .list-page-actions') &&
+      !/\/clubs\/(new|add)\b/i.test(a.getAttribute('href') || '')
+    );
     if (firstClub) return firstClub;
   }
   return null;
@@ -298,10 +323,14 @@ function startAutoSelect() {
   let tries = 0;
   autoTimer = setInterval(() => {
     tries++;
-    if (tries > 60 || mode !== 'browse' || (focused && focused.isConnected)) { clearInterval(autoTimer); return; }
+    if (tries > 60 || mode !== 'browse') { clearInterval(autoTimer); return; }
+    // If focus is currently stuck on a ".list-page-head" action button ("Add route", "Collections"),
+    // allow findDefault() to override it as soon as the first card is ready!
+    const stuckOnPageHeader = focused && focused.closest?.('.list-page-head, .list-page-actions');
+    if (focused && focused.isConnected && !stuckOnPageHeader) { clearInterval(autoTimer); return; }
     const btn = findDefault();
     if (btn) { clearInterval(autoTimer); focusEl(btn, true); }
-  }, 200);
+  }, 150);
 }
 
 function select() {

@@ -59,24 +59,17 @@ background-color: #2a2a33 !important; color: #eee !important; border: 1px solid 
 #btz-panel .btz-tab.active { background: #ff6b57; color: #fff; }
 #btz-panel .btz-slot.btz-inherit { opacity: .5; font-style: italic; }
 
-/* ========== Console UI Overhaul v4 (Centered 3-Equal-Col Dashboard & Full-Bleed Header/Footer) ========== */
+/* ========== Console UI Overhaul v6 (Horizon Redesign — Full Widescreen Fix) ========== */
 
-/*html.btz-page-dash body,
-html.btz-page-routes body,
-html.btz-page-route-detail body,
-html.btz-page-events body,
-html.btz-page-event-detail body {
-  padding-bottom: 72px !important;
-} */
-
-/* Only widen .main .wrap so the top navbar (.header) and bottom (.footer) stay 100% full-bleed */
+/* Only widen .main .wrap so the top navbar (.app-bar) and bottom (.footer) stay 100% full-bleed */
 .main .wrap.btz-wide-container,
 html.btz-page-dash .main > .content > .wrap,
 html.btz-page-routes .main > .content > .wrap,
 html.btz-page-route-detail .main > .content > .wrap,
 html.btz-page-events .main > .content > .wrap,
 html.btz-page-event-detail .main > .content > .wrap,
-html.btz-page-clubs .main > .content > .wrap {
+html.btz-page-clubs .main > .content > .wrap,
+html.btz-page-challenges .main > .content > .wrap {
   max-width: 96vw !important;
   width: 96vw !important;
   margin-left: auto !important;
@@ -87,7 +80,7 @@ html.btz-page-clubs .main > .content > .wrap {
 }
 
 /* --- 1. DASHBOARD: 3 EQUAL COLUMNS (33% EACH OF 96VW) --- */
-.btz-dash-root-3col {
+html.btz-page-dash .btz-dash-root-3col {
   max-width: 100% !important;
   width: 100% !important;
   margin: 0 auto !important;
@@ -97,65 +90,130 @@ html.btz-page-clubs .main > .content > .wrap {
   row-gap: 16px !important;
   align-items: start !important;
 }
-.itin-stats {
-  text-align: left !important;
-  grid-template-columns: none !important;
-}
 
-/* Row 1: "Welcome back, Josef" + live rider pill */
-.btz-dash-header {
+html.btz-page-dash .btz-dash-header {
   grid-column: 1 / -1 !important;
   grid-row: 1 !important;
   margin: 0 0 4px 0 !important;
 }
 
-/* Row 2: All 3 columns start at the exact same vertical level */
-.btz-dash-col-events,
-.btz-dash-col-stats,
-.btz-dash-col-community {
+html.btz-page-dash .btz-dash-col-events,
+html.btz-page-dash .btz-dash-col-stats,
+html.btz-page-dash .btz-dash-col-community {
   grid-row: 2 !important;
   margin-top: 0 !important;
   padding-top: 0 !important;
   min-width: 0 !important;
 }
-.btz-dash-col-events { grid-column: 1 !important; }
-.btz-dash-col-stats {
+html.btz-page-dash .btz-dash-col-events { grid-column: 1 !important; }
+html.btz-page-dash .btz-dash-col-stats {
   grid-column: 2 !important;
-  margin-top: -5px !important; /* Adjust between -14px and -20px to match .ds padding */
+  margin-top: 28px !important;
 }
+html.btz-page-dash .btz-dash-col-community { grid-column: 3 !important; }
 
-.btz-dash-col-community { grid-column: 3 !important; }
-
-/* Remove any extra top margin on the "COMING UP" and "COMMUNITY" eyebrow labels */
-.btz-dash-col-events > .zone-head,
-.btz-dash-col-community > .zone-head {
+html.btz-page-dash .btz-dash-col-events > .zone-head,
+html.btz-page-dash .btz-dash-col-community > .zone-head {
   margin-top: 0 !important;
   padding-top: 0 !important;
 }
 
-/* Stack "People I'm following" feed and "WEEK OF NOV 2" changelog at 100% width inside Column 3 */
-.btz-dash-col-community > .grid.community {
+/* Shared compact .itin-row + Stacked Vertical .itin-stats (used on BOTH Dashboard and /events) */
+.btz-dash-col-events .itin-row,
+.btz-events-page-grid .itin-row {
+  grid-template-columns: 5.2rem auto minmax(0, 1fr) auto !important;
+  column-gap: 14px !important;
+  row-gap: 8px !important;
+  align-items: center !important;
+  padding: 10px 14px !important;
+}
+
+.btz-dash-col-events .itin-thumb,
+.btz-events-page-grid .itin-thumb {
+  width: 88px !important;
+  flex-shrink: 0 !important;
+  display: block !important;
+}
+
+.btz-dash-col-events .itin-thumb img,
+.btz-events-page-grid .itin-thumb img {
+  width: 100% !important;
+  height: auto !important;
+  display: block !important;
+  border-radius: 8px !important;
+}
+
+.btz-dash-col-events .itin-stats,
+.btz-events-page-grid .itin-stats {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: flex-end !important;
+  justify-content: center !important;
+  gap: 2px !important;
+  text-align: right !important;
+  line-height: 1.15 !important;
+  min-width: 5.2rem !important;
+}
+
+.btz-dash-col-events .itin-stats > div,
+.btz-events-page-grid .itin-stats > div {
+  display: flex !important;
+  align-items: baseline !important;
+  justify-content: flex-end !important;
+  gap: 5px !important;
+  white-space: nowrap !important;
+}
+
+.btz-dash-col-events .itin-stats .itin-sub,
+.btz-events-page-grid .itin-stats .itin-sub {
+  margin: 0 !important;
+}
+
+/* Stack Stats (.ds) and .ds-logbook cleanly inside Column 2 without horizontal collision */
+html.btz-page-dash .btz-dash-col-stats > .ds {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 14px !important;
+}
+
+html.btz-page-dash .btz-dash-col-stats .ds-logbook {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 16px !important;
+}
+
+html.btz-page-dash .btz-dash-col-stats .ds-figures {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 12px !important;
+}
+
+html.btz-page-dash .btz-dash-col-stats .ds-figure-value {
+  font-size: clamp(1.35rem, 1.8vw, 1.85rem) !important;
+}
+
+html.btz-page-dash .btz-dash-col-stats .ds-passport {
+  display: grid !important;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)) !important;
+  gap: 12px !important;
+}
+
+/* Stack Community feed and aside.news at 100% width inside Column 3 */
+html.btz-page-dash .btz-dash-col-community > .community,
+html.btz-page-dash .btz-dash-col-community > .grid.community {
   display: flex !important;
   flex-direction: column !important;
   align-items: stretch !important;
   gap: 14px !important;
 }
-.btz-dash-col-community > .grid.community > *,
-.btz-dash-col-community .news-card {
+html.btz-page-dash .btz-dash-col-community > .community > *,
+html.btz-page-dash .btz-dash-col-community > .grid.community > *,
+html.btz-page-dash .btz-dash-col-community aside.news,
+html.btz-page-dash .btz-dash-col-community .news-card {
   width: 100% !important;
   max-width: 100% !important;
   flex: none !important;
   box-sizing: border-box !important;
-}
-/* Pull "People I'm following" sub-label onto the top-right of the Community column header */
-.btz-dash-col-community {
-  position: relative !important;
-}
-.btz-dash-col-community .filter-row {
-  position: absolute !important;
-  top: 0 !important;
-  right: 0 !important;
-  margin: 0 !important;
 }
 
 .btz-dash-event-row {
@@ -164,12 +222,12 @@ html.btz-page-clubs .main > .content > .wrap {
 }
 
 @media (max-width: 1200px) {
-  .btz-dash-root-3col {
+  html.btz-page-dash .btz-dash-root-3col {
     grid-template-columns: 1fr !important;
   }
-  .btz-dash-col-events,
-  .btz-dash-col-stats,
-  .btz-dash-col-community {
+  html.btz-page-dash .btz-dash-col-events,
+  html.btz-page-dash .btz-dash-col-stats,
+  html.btz-page-dash .btz-dash-col-community {
     grid-column: 1 !important;
     grid-row: auto !important;
     margin-top: 0 !important;
@@ -177,13 +235,13 @@ html.btz-page-clubs .main > .content > .wrap {
 }
 
 /* --- 2. ROUTES PAGE (/routes) — 4-COLUMN WIDESCREEN GRID --- */
-.btz-routes-grid {
+html.btz-page-routes .grid.btz-routes-grid {
   display: grid !important;
   grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
   gap: 18px !important;
 }
 @media (max-width: 1200px) {
-  .btz-routes-grid {
+  html.btz-page-routes .grid.btz-routes-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
   }
 }
@@ -192,23 +250,19 @@ html.btz-page-clubs .main > .content > .wrap {
 }
 
 /* --- 3. EVENTS PAGE (/events) — 2-COLUMN WIDESCREEN CARDS --- */
-.btz-events-page-grid {
+html.btz-page-events .itin.btz-events-page-grid {
   display: grid !important;
   grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   gap: 14px !important;
   align-items: stretch !important;
 }
-.btz-events-date-header {
+html.btz-page-events .btz-events-date-header {
   grid-column: 1 / -1 !important;
   margin-top: 8px !important;
   margin-bottom: 2px !important;
 }
-.btz-events-page-card {
-  background: #fff !important;
-  padding: 12px 14px !important;
+html.btz-page-events .btz-events-page-card {
   border-radius: 14px !important;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04) !important;
-  border: 1px solid rgba(0, 0, 0, 0.06) !important;
   transition: transform 0.14s ease, box-shadow 0.14s ease !important;
   margin: 0 !important;
 }
@@ -216,7 +270,17 @@ html.btz-page-events .facets {
   margin-bottom: 0.5rem !important;
 }
 
-/* --- 4. ROUTE & EVENT DETAIL COCKPIT (/routes/:id, /events/:id) --- */
+/* --- 4. CLUBS PAGE (/clubs) — 3-COLUMN WIDESCREEN GRID --- */
+html.btz-page-clubs .grid.btz-clubs-grid {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 16px !important;
+}
+.btz-club-card-item {
+  transition: transform 0.14s ease, box-shadow 0.14s ease !important;
+}
+
+/* --- 5. ROUTE & EVENT DETAIL COCKPIT (/routes/:id, /events/:id) --- */
 .btz-detail-cockpit-grid {
   max-width: 100% !important;
   width: 100% !important;
@@ -274,9 +338,10 @@ html.btz-page-events .facets {
   font-size: 13px;
 }
 
-/* --- 5. TACTILE CONTROLLER FOCUS & SELECTION RING --- */
+/* --- 6. TACTILE CONTROLLER FOCUS & SELECTION RING --- */
 .btz-card-focused,
-.btz-route-card-item:has(.btz-focus) {
+.btz-route-card-item:has(.btz-focus),
+.btz-club-card-item:has(.btz-focus) {
   transform: translateY(-2px) scale(1.015) !important;
   box-shadow: 0 10px 26px rgba(255, 107, 87, 0.24) !important;
   z-index: 5;
@@ -288,8 +353,7 @@ box-shadow: 0 0 0 4px rgba(255, 107, 87, 0.25), 0 8px 24px rgba(0, 0, 0, 0.2) !i
 transition: left 0.08s ease-out, top 0.08s ease-out, width 0.08s ease-out, height 0.08s ease-out !important;
 }
 
-
-/* --- 6. BOTTOM CONSOLE HUD BAR --- */
+/* --- 7. BOTTOM CONSOLE HUD BAR --- */
 #btz-console-hud {
 position: fixed;
 left: 50%;
@@ -302,7 +366,6 @@ gap: 20px;
 padding: 10px 22px;
 border-radius: 999px;
 background: rgba(20, 20, 26, 0.94);
-backdrop-filter: blur(10px);
 color: #f4f4f5;
 font: 13px system-ui, -apple-system, sans-serif;
 box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.12);
@@ -336,5 +399,3 @@ font: 800 11px system-ui, sans-serif;
 #btz-console-hud kbd.btz-k-b { background: #ec4899; color: #fff; }
 #btz-console-hud kbd.btz-k-y { background: #3b82f6; color: #fff; }
 #btz-console-hud kbd.btz-k-z { background: #f97316; color: #fff; }
-
-

@@ -1,4 +1,4 @@
-/* ---------- Console UI Layout Engine v4 (Clean 3-Col Equal Dashboard & Full-Bleed Fix) ---------- */
+/* ---------- Console UI Layout Engine v6 (Clean Horizon SPA Reset & Exact Selectors) ---------- */
 
 let consoleUiEnabled = true;
 let hudEl = null;
@@ -12,31 +12,47 @@ function clearPageClasses() {
         'btz-page-route-detail',
         'btz-page-events',
         'btz-page-event-detail',
-        'btz-page-clubs'
+        'btz-page-clubs',
+        'btz-page-challenges'
     );
-    // Remove any leftover .btz-wide-container from outer root/container wrappers so header/footer never get cut off
-    document.querySelectorAll('.btz-wide-container').forEach((el) => {
-        if (!el.matches('.main .wrap, .main .content')) {
-            el.classList.remove('btz-wide-container');
-        }
+    // Clean up all btz layout classes on persistent SvelteKit wrappers (.main, .content, .wrap)
+    const dirtyClasses = [
+        'btz-wide-container',
+        'btz-dash-root-3col',
+        'btz-routes-grid',
+        'btz-route-card-item',
+        'btz-events-page-grid',
+        'btz-event-card',
+        'btz-events-page-card',
+        'btz-events-date-header',
+        'btz-clubs-grid',
+        'btz-club-card-item',
+        'btz-detail-cockpit-grid'
+    ];
+    document.querySelectorAll('.main, .main .content, .main .wrap').forEach((el) => {
+        el.classList.remove(...dirtyClasses);
     });
 }
 
 function widenMainContentWrap() {
     const mainWrap = document.querySelector('.main .content > .wrap, .main > .wrap');
     if (mainWrap) mainWrap.classList.add('btz-wide-container');
+    return mainWrap;
 }
 
 /* 1. DASHBOARD (/dashboard) — 3 Equal Columns (Coming Up | Stats + Challenge | Community + Changelog) */
 function layoutDashboard() {
-    const colRoot = document.querySelector('.dashboard-wrap');
+    const welcome = document.querySelector('.welcome-row');
+    const colRoot =
+    document.querySelector('.dashboard-wrap') ||
+    (welcome && welcome.parentElement) ||
+    document.querySelector('.main .content > .wrap');
     if (!colRoot) return;
 
     document.documentElement.classList.add('btz-page-dash');
     widenMainContentWrap();
     colRoot.classList.add('btz-dash-root-3col');
 
-    // Remove old injected quick tiles if present
     document.getElementById('btz-quick-tiles')?.remove();
 
     const headerRow = colRoot.querySelector('.welcome-row') || colRoot.firstElementChild;
@@ -45,7 +61,6 @@ function layoutDashboard() {
         headerRow.style.gridColumn = '1 / -1';
         headerRow.style.gridRow = '1';
 
-        // Ensure the native live rider pill ("13 riding") is visible and focusable
         const ridingPill = headerRow.querySelector('a.live-pill, a');
         if (ridingPill) {
             ridingPill.classList.remove('btz-hidden-riding-pill');
@@ -57,16 +72,23 @@ function layoutDashboard() {
     const zones = [...colRoot.querySelectorAll(':scope > section.zone')];
 
     for (const zone of zones) {
-        // Reset any old inline styles from earlier versions
-        zone.classList.remove('btz-zone-unwrapped', 'btz-col-left', 'btz-col-right', 'btz-right-stack-item');
+        zone.classList.remove(
+            'btz-zone-unwrapped',
+            'btz-col-left',
+            'btz-col-right',
+            'btz-right-stack-item',
+            'btz-dash-col-events',
+            'btz-dash-col-stats',
+            'btz-dash-col-community'
+        );
         zone.style.display = '';
         zone.style.gridArea = '';
         zone.style.marginTop = '';
 
-        const headText = (zone.querySelector('.zone-head')?.textContent || '').trim().toLowerCase();
+        const headText = (zone.querySelector('.zone-head h2, .zone-head')?.textContent || '').trim().toLowerCase();
 
         // COLUMN 1 (Left): "Coming up"
-        if (headText === 'coming up' || zone.querySelector('.itin-row, .event-row')) {
+        if (headText.startsWith('coming up') || zone.querySelector('.itin-row, .event-row')) {
             zone.classList.add('btz-dash-col-events');
             zone.style.gridColumn = '1';
             zone.style.gridRow = '2';
@@ -86,7 +108,6 @@ function layoutDashboard() {
             zone.classList.add('btz-dash-col-stats');
             zone.style.gridColumn = '2';
             zone.style.gridRow = '2';
-            // Clear old inline styles on children
             for (const child of zone.children) {
                 child.style.gridArea = '';
                 child.style.gridColumn = '';
@@ -97,7 +118,7 @@ function layoutDashboard() {
         }
 
         // COLUMN 3 (Right): "Community" + Changelog
-        if (headText === 'community' || zone.querySelector('.community')) {
+        if (headText.startsWith('community') || zone.querySelector('.community, .feed')) {
             zone.classList.add('btz-dash-col-community');
             zone.style.gridColumn = '3';
             zone.style.gridRow = '2';
@@ -109,59 +130,63 @@ function layoutDashboard() {
 /* 2. ROUTES LIST (/routes) — Widescreen 4-Column Console Grid */
 function layoutRoutesList() {
     document.documentElement.classList.add('btz-page-routes');
-    widenMainContentWrap();
+    const wrap = widenMainContentWrap();
+    if (!wrap) return;
 
-    const routeLinks = [...document.querySelectorAll('a[href*="/routes/"]')].filter(
-        (a) => !a.closest('nav, header')
-    );
-    if (!routeLinks.length) return;
-
-    let card = routeLinks[0];
-    while (card.parentElement && card.parentElement.querySelectorAll('a[href*="/routes/"]').length === 1) {
-        card = card.parentElement;
-    }
-    const gridContainer = card.parentElement;
+    const gridContainer = wrap.querySelector('.grid.grid-cols-3, .grid');
     if (!gridContainer) return;
 
     gridContainer.classList.add('btz-routes-grid');
     for (const child of gridContainer.children) {
-        child.classList.add('btz-route-card-item');
+        if (child.classList.contains('route-tile') || child.classList.contains('postcard')) {
+            child.classList.add('btz-route-card-item');
+        }
     }
 }
 
 /* 3. EVENTS LIST (/events) — Widescreen 2-Column Event Cards */
 function layoutEventsList() {
     document.documentElement.classList.add('btz-page-events');
-    widenMainContentWrap();
+    const wrap = widenMainContentWrap();
+    if (!wrap) return;
 
-    const eventLinks = [...document.querySelectorAll('a[href*="/events/"]')].filter(
-        (a) => !a.closest('nav, header') && a.textContent.trim().toLowerCase() !== 'view series'
-    );
-    if (!eventLinks.length) return;
-
-    const grids = new Set();
-    for (const a of eventLinks) {
-        let row = a.parentElement;
-        while (row && row.parentElement && !row.querySelector('img') && row.parentElement.children.length > 1) {
-            row = row.parentElement;
-        }
-        if (row && row.parentElement) {
-            row.classList.add('btz-event-card', 'btz-events-page-card');
-            row.parentElement.classList.add('btz-events-page-grid');
-            grids.add(row.parentElement);
-        }
-    }
-
-    for (const grid of grids) {
-        for (const child of grid.children) {
-            if (!child.classList.contains('btz-events-page-card')) {
+    const itins = wrap.querySelectorAll('.itin');
+    for (const itin of itins) {
+        itin.classList.add('btz-events-page-grid');
+        for (const child of itin.children) {
+            if (child.classList.contains('itin-row') || child.classList.contains('event-row')) {
+                child.classList.add('btz-event-card', 'btz-events-page-card');
+                const thumbLink = child.querySelector('a.itin-thumb, a.event-row-thumb');
+                if (thumbLink) thumbLink.dataset.btzSkip = '1';
+            } else {
                 child.classList.add('btz-events-date-header');
             }
         }
     }
 }
 
-/* 4. ROUTE DETAIL (/routes/:id) & EVENT DETAIL (/events/:id) — Widescreen 2-Column Cockpit */
+/* 4. CLUBS LIST (/clubs) — Widescreen 3-Column Club Grid */
+function layoutClubsList() {
+    document.documentElement.classList.add('btz-page-clubs');
+    const wrap = widenMainContentWrap();
+    if (!wrap) return;
+
+    const gridContainer = wrap.querySelector('.grid.grid-cards, .grid');
+    if (!gridContainer) return;
+
+    gridContainer.classList.add('btz-clubs-grid');
+    for (const child of gridContainer.children) {
+        child.classList.add('btz-club-card-item');
+    }
+}
+
+/* 5. CHALLENGES LIST (/challenges) */
+function layoutChallengesList() {
+    document.documentElement.classList.add('btz-page-challenges');
+    widenMainContentWrap();
+}
+
+/* 6. ROUTE DETAIL (/routes/:id) & EVENT DETAIL (/events/:id) — Widescreen 2-Column Cockpit */
 function layoutDetailPage(isEvent) {
     document.documentElement.classList.add(isEvent ? 'btz-page-event-detail' : 'btz-page-route-detail');
     widenMainContentWrap();
@@ -172,7 +197,6 @@ function layoutDetailPage(isEvent) {
     let colRoot = document.querySelector('.detail-page');
 
     if (!colRoot) {
-        // fallback: old heuristic
         colRoot = h1.parentElement;
         while (colRoot && colRoot.parentElement && colRoot.children.length < 2) {
             colRoot = colRoot.parentElement;
@@ -226,8 +250,10 @@ function updateConsoleHud() {
     if (hudEl.style.display !== 'flex') hudEl.style.display = 'flex';
 
     let focusedText = 'D-Pad to Navigate';
-    if (focused) {
-        const card = focused.closest('.btz-dash-event-row, .btz-events-page-card, .btz-route-card-item');
+    if (focused && focused.isConnected) {
+        const card = focused.closest(
+            '.btz-dash-event-row, .itin-row, .btz-events-page-card, .btz-route-card-item, .btz-club-card-item, .feed-row'
+        );
         const raw = card ? card.textContent : (focused.getAttribute('aria-label') || focused.textContent || '');
         focusedText = raw.replace(/\s+/g, ' ').trim().slice(0, 42);
     }
@@ -240,9 +266,11 @@ function updateConsoleHud() {
     location.pathname === '/routes' ||
     location.pathname === '/routes/' ||
     location.pathname === '/events' ||
-    location.pathname === '/events/';
+    location.pathname === '/events/' ||
+    location.pathname === '/clubs' ||
+    location.pathname === '/clubs/';
     const pageHint = isPaginated ? 'Scroll / Next Page' : 'Scroll Up / Down';
-    const card = focused.closest('.btz-dash-event-row, .btz-events-page-card, .btz-route-card-item, .postcard, .club-tile');
+
     hudEl.innerHTML = `
     <div class="btz-hud-target">${focusedText || 'Ready'}</div>
     <div class="btz-hud-keys">
@@ -268,10 +296,8 @@ function scheduleConsoleUi() {
             else if (/^\/routes\/.+/.test(path)) layoutDetailPage(false);
             else if (path === '/events' || path === '/events/') layoutEventsList();
             else if (/^\/events\/.+/.test(path)) layoutDetailPage(true);
-            else if (path === '/clubs' || path === '/clubs/') {
-                document.documentElement.classList.add('btz-page-clubs');
-                widenMainContentWrap();
-            }
+            else if (path === '/clubs' || path === '/clubs/') layoutClubsList();
+            else if (path === '/challenges' || path === '/challenges/') layoutChallengesList();
         }
         updateConsoleHud();
     });
