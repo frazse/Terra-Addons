@@ -1,0 +1,52 @@
+/* rider-speed: live speed to the left of the per-rider stat value in the rider list.
+   The row's name (already an ellipsis "one-liner") absorbs the span's space, so
+   nothing overflows. The panel itself is widened a touch (22rem, see below). */
+.rider .tr-rider-speed {
+  white-space: nowrap;
+  /* Explicit light colors: the row context renders dim grey, grey-on-grey unreadable. */
+  color: #ececec;
+}
+.rider .tr-rider-speed .unit {
+  font-size: 0.7em;
+  opacity: 1;
+  color: #d0d0d0;
+}
+
+/* The row (confirmed from computed styles) is a CSS grid:
+     [distance ~104px] [avatar ~31px] [name ~173px] [stats ~62px]
+   Pin the distance and avatar tracks to the page's own fixed widths so that,
+   across a multi-rider list, every row's avatar and name start at the same x
+   (with auto/fit-content they'd wobble: "+2.48km" vs "-1.43km" are different
+   widths). The name stays the elastic 1fr track. The stats track must stay
+   auto (fit its content): the page pins it to the W/kg value's width, so the
+   injected speed span would overflow the track and cause a horizontal
+   scrollbar in .riders-main. */
+.rider {
+    grid-template-columns: 4rem 1.2rem minmax(0, 1fr) auto !important;
+
+}
+/* Required for the 1fr track to compress below the text's min-content. */
+.rider .rider-name {
+  min-width: 0 !important;
+}
+
+/* The page pins the rider panel to 20rem via --hud-people-w; widen it to 22rem
+   so name + speed + W/kg all fit with room to spare. Set the custom property
+   (the page's own knob, so any calc()/var() downstream picks it up) and width
+   as a direct guarantee in case a level is set to a fixed box. */
+.hud-zone.zone-people {
+  --hud-people-w: 22rem !important;
+  width: 22rem !important;
+}
+
+/* Field-stable numbers: reserve the widest realistic value for both number
+   fields (speed "99.9", W/kg "10.0") and right-align them. ch is exact in
+   monospace, so values changing (0.0 -> 10.0 etc.) only fill pre-reserved
+   space and never reflow the row, the span, or the name. */
+.rider .tr-rider-speed .num,
+.rider .rider-stat-value {
+  display: inline-block;
+  min-width: 4.2ch;
+  opacity: 1;
+  text-align: right;
+}

@@ -1,0 +1,22 @@
+{
+  "id": "rider-speed",
+  "name": "Rider Speed",
+  "version": "0.1.0",
+  "description": "Shows each rider's live speed next to the W/kg value in the rider list, from the biketerra ride broadcast (~2Hz).",
+  "matches": [
+    "https://biketerra.com/ride*",
+    "https://biketerra.com/spectate/*"
+  ],
+  "js": ["main.js"],
+  "css": ["style.css"],
+  "settings": [
+    {
+      "key": "speed_unit",
+      "label": "Speed unit",
+      "type": "text",
+      "default": "km/h",
+      "description": "km/h or mph. (The biketerra broadcast sends m/s.)"
+    }
+  ],
+  "enabled": true
+}
