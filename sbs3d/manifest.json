@@ -1,0 +1,9 @@
+{
+  "id": "sbs3d",
+  "name": "Biketerra SBS 3D (Viture, dev)",
+  "version": "0.7.0",
+  "description": "DEV / SANDBOX — side-by-side stereo 3D for Viture XR glasses via single-window double-render: ONE game instance, per-eye camera pose (±right·IPD/2), each eye rendered into a FULL-canvas offscreen (offscreen format lazily read from the real canvas backbuffer — the v0.7 root-cause fix for the poisoned 'sbs3d-pipeline'), then a composite pass samples both offscreens into the canvas halves (a canvas backbuffer can only be rendered to, never copied into). v0.7 also adds the dual-Eye HUD Mirror (right-half MutationObserver-cloned HUD, 2D canvases re-synced every 6 frames) and a stereo 3D cursor with a right→left interactive input bridge. Toggle / IPD / swap-eyes / HUD mirror in the on-screen chip. NOT shippable.",
+  "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
+  "js": ["main.js"],
+  "enabled": true
+}
