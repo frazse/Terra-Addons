@@ -1,0 +1,12 @@
+{
+  "id": "pip-cam",
+  "name": "Biketerra PiP Camera",
+  "version": "0.1.0",
+  "description": "Picture-in-Picture secondary 3D camera (Static World Tripod, Route Spline Watcher, Rear-View Mirror, and Chase Drone) with click-to-type fine controls, interactive route elevation/minimap placement, and on-screen drag/resize.",
+  "matches": [
+    "https://biketerra.com/ride*",
+    "https://biketerra.com/spectate/*"
+  ],
+  "js": ["main.js"],
+  "enabled": true
+}
