@@ -10,15 +10,17 @@ swapRearButtons: false,       // false: RS1=Easier, RS2=Harder | true: RS1=Harde
 keyRearHarder: 'w',
 keyRearEasier: 's',
 keyFrontUp: 'q',
-keyFrontDown: 'q',
-hudPos: { bottom: '24px', right: '280px' }
+keyFrontDown: 'q'
   };
 
   let state = {
     frontIdx: 1, // 46T
     rearIdx: 4,  // 21T (ratio ~2.19)
 vsChar: null,
-isInternalWrite: false
+isInternalWrite: false,
+isErgMode: false,
+ergText: '',
+nativeGearEl: null
   };
 
   function parseTeethList(str, ascending = true) {
@@ -47,9 +49,6 @@ isInternalWrite: false
       if (s.key_front_up) config.keyFrontUp = s.key_front_up.trim();
       if (s.key_front_down) config.keyFrontDown = s.key_front_down.trim();
 
-      const savedPos = await terra.storage.get('hud_pos', null);
-      if (savedPos) config.hudPos = savedPos;
-
       const savedGear = await terra.storage.get('last_gear', null);
       if (savedGear) {
         state.frontIdx = Math.min(config.front.length - 1, Math.max(0, savedGear.frontIdx ?? 1));
@@ -62,6 +61,141 @@ isInternalWrite: false
       terra.log('Error loading settings:', e.message || e);
     }
   }
+
+  // --- 0. DETECT BIKETERRA "ERG Xw" AND "Gear X" DOM ELEMENTS ---
+  const GEAR_REGEX = /^\s*Gear\s+\d+\s*$/i;
+  const ERG_REGEX = /\bERG\s+\d+\s*w\b/i;
+
+  function isElementVisible(el) {
+    if (!el || !el.isConnected) return false;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return false;
+    const cs = getComputedStyle(el);
+    return cs.display !== 'none' && cs.visibility !== 'hidden';
+  }
+
+  function restoreHiddenGearElements(exceptEl = null) {
+    document.querySelectorAll('[data-terra-hidden-gear="1"]').forEach(el => {
+      if (el !== exceptEl) {
+        el.style.opacity = '';
+        el.style.pointerEvents = '';
+        delete el.dataset.terraHiddenGear;
+      }
+    });
+  }
+
+  function scanBiketerraDom() {
+    if (!location.pathname.includes('/ride')) {
+      state.isErgMode = false;
+      state.ergText = '';
+      state.nativeGearEl = null;
+      restoreHiddenGearElements();
+      if (hudEl) hudEl.style.display = 'none';
+      return;
+    }
+
+    let foundErg = false;
+    let foundErgText = '';
+    let foundGearEl = null;
+
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode(node) {
+          const p = node.parentElement;
+          if (!p) return NodeFilter.FILTER_REJECT;
+          const tag = p.tagName;
+          if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') return NodeFilter.FILTER_REJECT;
+          if (p.closest('#terra-gear-hud, #btz-panel')) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      }
+    );
+
+    let n;
+    while ((n = walker.nextNode())) {
+      const txt = n.nodeValue.trim();
+      if (!txt || txt.length > 40) continue;
+
+      if (!foundGearEl && GEAR_REGEX.test(txt)) {
+        const el = n.parentElement;
+        if (isElementVisible(el)) foundGearEl = el;
+      }
+
+      if (!foundErg && ERG_REGEX.test(txt)) {
+        const el = n.parentElement;
+        if (isElementVisible(el)) {
+          foundErg = true;
+          foundErgText = txt.match(ERG_REGEX)[0].toUpperCase();
+        }
+      }
+    }
+
+    // Fallback check in case "Gear" + number or "ERG" + watts are split across child spans
+    if (!foundErg || !foundGearEl) {
+      const candidates = document.querySelectorAll('div, span, button, p');
+      for (let i = 0; i < candidates.length; i++) {
+        const el = candidates[i];
+        if (el.children.length > 4 || el.closest('#terra-gear-hud, #btz-panel')) continue;
+        const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!t || t.length > 24) continue;
+
+        if (!foundErg && ERG_REGEX.test(t) && isElementVisible(el)) {
+          foundErg = true;
+          foundErgText = t.match(ERG_REGEX)[0].toUpperCase();
+        }
+        if (!foundGearEl && GEAR_REGEX.test(t) && isElementVisible(el)) {
+          foundGearEl = el;
+        }
+      }
+    }
+
+    // Anchor our HUD directly onto Biketerra's "Gear X" DOM element when visible (and not in ERG mode)
+    if (foundGearEl && !foundErg) {
+      const targetBox = foundGearEl.closest('.gear-indicator, .virtual-gear') || foundGearEl;
+      state.nativeGearEl = targetBox;
+      restoreHiddenGearElements(targetBox);
+
+      if (targetBox.dataset.terraHiddenGear !== '1') {
+        targetBox.dataset.terraHiddenGear = '1';
+        targetBox.style.opacity = '0';
+        targetBox.style.pointerEvents = 'none';
+      }
+
+      if (hudEl) {
+        const r = targetBox.getBoundingClientRect();
+        // Anchor our HUD to the exact center/bottom of Biketerra's "Gear X" box
+        const centerX = r.left + r.width / 2;
+        const bottomPx = Math.max(8, Math.round(window.innerHeight - r.bottom));
+        const leftPx = Math.max(8, Math.min(window.innerWidth - 228, Math.round(centerX - 110)));
+
+        hudEl.style.display = 'block';
+        hudEl.style.bottom = `${bottomPx}px`;
+        hudEl.style.left = `${leftPx}px`;
+        hudEl.style.top = 'auto';
+        hudEl.style.right = 'auto';
+      }
+    } else {
+      // Either in ERG mode ("ERG Xw") or "Gear X" is not on screen -> restore native DOM & hide our HUD
+      state.nativeGearEl = null;
+      restoreHiddenGearElements();
+      if (hudEl) {
+        hudEl.style.display = 'none';
+      }
+    }
+
+    if (foundErg !== state.isErgMode || foundErgText !== state.ergText) {
+      state.isErgMode = foundErg;
+      state.ergText = foundErgText;
+      terra.log(foundErg
+      ? `ERG mode detected (${foundErgText}) -> hiding Gear HUD & passing shifters through to Biketerra (W/S)`
+      : `Virtual Shifting mode active -> 2x12 shifters & HUD engaged`);
+    }
+  }
+
+  addEventListener('resize', scanBiketerraDom);
+  terra.onCleanup(() => removeEventListener('resize', scanBiketerraDom));
 
   // --- 1. NATIVE HARDWARE VIRTUAL SHIFTING ENGINE (00000003-19ca-4651-86e5-fa29dcdd09d1) ---
   const ZWIFT_VS_SERVICES = [
@@ -143,7 +277,6 @@ isInternalWrite: false
   }
 
   // --- 1B. DIRECT ZWIFT RIDE CONTROLLER SHIFTER INTERCEPTOR ---
-  // Reads raw 0x23 protobuf button masks from Zwift Ride so zwift-ride addon keybinds can stay on default (LS=S, RS=W)!
   const ZR_MASKS = {
     shift_up_l: 0x100,  // LS1
     shift_dn_l: 0x200,  // LS2
@@ -167,7 +300,6 @@ isInternalWrite: false
     if (!location.pathname.includes('/ride')) return;
     if (!u8 || u8.length < 3 || u8[0] !== 0x23) return;
 
-    // Parse protobuf field 1 (wire type 0 -> tag === 0x08)
     let pos = 1;
     let buttonMap = null;
     while (pos < u8.length) {
@@ -195,12 +327,17 @@ isInternalWrite: false
     zrPrevMaskByDev.set(devId, buttonMap);
     if (prev === undefined) return;
 
+    scanBiketerraDom();
+    // Only intercept Zwift Ride shifters when "Gear X" is active (not in ERG mode)
+    if (state.isErgMode || !state.nativeGearEl) {
+      return;
+    }
+
     const now = Date.now();
     for (const [btnName, mask] of Object.entries(ZR_MASKS)) {
       const wasPressed = (prev & mask) === 0;
       const isPressed = (buttonMap & mask) === 0;
       if (!wasPressed && isPressed) {
-        // De-duplicate across left/right tunnelled controllers (150ms window)
         if (now - (zrLastPressTime[btnName] || 0) < 150) continue;
         zrLastPressTime[btnName] = now;
         handleZwiftRideShifterPress(btnName);
@@ -210,16 +347,12 @@ isInternalWrite: false
 
   function handleZwiftRideShifterPress(btnName) {
     if (btnName === 'shift_up_l') {
-      // LS1: Front Small Ring (or toggle if configured)
       shiftFront(config.frontShifterMode === 'toggle' ? 0 : -1, 'zwift-ride:LS1');
     } else if (btnName === 'shift_dn_l') {
-      // LS2: Front Big Ring (or toggle if configured)
       shiftFront(config.frontShifterMode === 'toggle' ? 0 : +1, 'zwift-ride:LS2');
     } else if (btnName === 'shift_up_r') {
-      // RS1: Rear Easier (or Harder if swapped)
       shiftRear(config.swapRearButtons ? +1 : -1, 'zwift-ride:RS1');
     } else if (btnName === 'shift_dn_r') {
-      // RS2: Rear Harder (or Easier if swapped)
       shiftRear(config.swapRearButtons ? -1 : +1, 'zwift-ride:RS2');
     }
   }
@@ -279,7 +412,6 @@ isInternalWrite: false
     terra.ble.onConnect(() => setTimeout(scanAndBindDevices, 300));
     terra.ble.onPaired(() => setTimeout(scanAndBindDevices, 300));
 
-    // Also listen to global BLE notifications if emitted by Terra shim
     if (terra.ble && typeof terra.ble.onNotify === 'function') {
       terra.ble.onNotify((evt) => {
         if (evt && evt.bytes && evt.bytes[0] === 0x23) {
@@ -288,7 +420,10 @@ isInternalWrite: false
       });
     }
 
-    const pollId = setInterval(scanAndBindDevices, 2000);
+    const pollId = setInterval(() => {
+      scanAndBindDevices();
+      scanBiketerraDom();
+    }, 1000);
     terra.onCleanup(() => clearInterval(pollId));
   }
 
@@ -375,7 +510,7 @@ isInternalWrite: false
     else if (cmd.derailleur === 'rear') shiftRear(cmd.dir ?? 1, 'bus:rear');
   });
 
-    // --- 3. INTERCEPT KEYBOARD & BLOCK ZWIFT-RIDE DEFAULT 'W'/'S' KEYS ---
+    // --- 3. INTERCEPT KEYBOARD & PASS THROUGH W/S WHEN IN ERG MODE ---
     const sameKey = (a, b) => a && b && a.toLowerCase() === b.toLowerCase();
 
     function isZwiftRideConnected() {
@@ -393,6 +528,13 @@ isInternalWrite: false
       const tag = e.target?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return;
 
+      scanBiketerraDom();
+
+      // If in ERG mode or "Gear X" is not active, let W/S pass through to Biketerra untouched!
+      if (state.isErgMode || !state.nativeGearEl) {
+        return;
+      }
+
       const k = e.key;
       const isRearHarder = sameKey(k, config.keyRearHarder);
       const isRearEasier = sameKey(k, config.keyRearEasier);
@@ -400,12 +542,9 @@ isInternalWrite: false
       const isFrontDown = sameKey(k, config.keyFrontDown);
 
       if (isRearHarder || isRearEasier || isFrontUp || isFrontDown || sameKey(k, 'w') || sameKey(k, 's')) {
-        // Always block 'w'/'s' from reaching Biketerra so Biketerra's built-in shifting doesn't trigger
         e.preventDefault();
         e.stopImmediatePropagation();
 
-        // If this is a synthetic 'w' or 's' from zwift-ride (!e.isTrusted) and we are already reading
-        // raw BLE buttons from the Zwift Ride controller directly, ignore the synthetic key!
         if (!e.isTrusted && isZwiftRideConnected() && (sameKey(k, 'w') || sameKey(k, 's'))) {
           return;
         }
@@ -427,11 +566,12 @@ isInternalWrite: false
       window.removeEventListener('keyup', onKeyEvent, true);
     });
 
-    // --- 4. ON-SCREEN GEAR INDICATOR HUD ---
+    // --- 4. ON-SCREEN GEAR INDICATOR HUD (LOCKED TO "Gear X" POSITION) ---
     terra.ui.addStyle(`
     #terra-gear-hud {
     position: fixed;
     z-index: 99990;
+    display: none;
     width: 220px;
     padding: 10px 12px;
     border-radius: 12px;
@@ -452,7 +592,6 @@ isInternalWrite: false
       display: flex;
       justify-content: space-between;
       align-items: center;
-      cursor: grab;
       padding-bottom: 6px;
       margin-bottom: 8px;
       border-bottom: 1px solid rgba(255, 255, 255, 0.08);
@@ -598,10 +737,9 @@ isInternalWrite: false
 
       hudEl = document.createElement('div');
       hudEl.id = 'terra-gear-hud';
-      Object.assign(hudEl.style, config.hudPos);
 
       hudEl.innerHTML = `
-      <div class="tg-header" id="tg-drag-handle">
+      <div class="tg-header">
       <span>⚙️ <span id="tg-spec-title">2x12 GRX</span></span>
       <span id="tg-warn-label" style="color: #f59e0b; font-size: 9px;"></span>
       <button type="button" id="tg-cfg-toggle" title="Configure Gears" style="background:none;border:none;color:#a1a1aa;cursor:pointer;font-size:11px;padding:0;">✎</button>
@@ -669,37 +807,8 @@ isInternalWrite: false
         }
       });
 
-      const handle = hudEl.querySelector('#tg-drag-handle');
-      let dragging = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
-      handle.addEventListener('mousedown', (e) => {
-        if (e.target.id === 'tg-cfg-toggle') return;
-        dragging = true;
-        const rect = hudEl.getBoundingClientRect();
-        startX = e.clientX;
-        startY = e.clientY;
-        startLeft = rect.left;
-        startTop = rect.top;
-        hudEl.style.bottom = 'auto';
-        hudEl.style.right = 'auto';
-        hudEl.style.left = `${startLeft}px`;
-        hudEl.style.top = `${startTop}px`;
-        e.preventDefault();
-      });
-      window.addEventListener('mousemove', (e) => {
-        if (!dragging) return;
-        const nl = Math.max(8, Math.min(window.innerWidth - 230, startLeft + (e.clientX - startX)));
-        const nt = Math.max(8, Math.min(window.innerHeight - 140, startTop + (e.clientY - startY)));
-        hudEl.style.left = `${nl}px`;
-        hudEl.style.top = `${nt}px`;
-      });
-      window.addEventListener('mouseup', () => {
-        if (!dragging) return;
-        dragging = false;
-        config.hudPos = { left: hudEl.style.left, top: hudEl.style.top, bottom: 'auto', right: 'auto' };
-        terra.storage.set('hud_pos', config.hudPos).catch(() => {});
-      });
-
       updateHud();
+      scanBiketerraDom();
     }
 
     function updateHud() {
@@ -746,6 +855,7 @@ isInternalWrite: false
     function checkRouteAndMount() {
       if (location.pathname.includes('/ride')) {
         buildHud();
+        scanBiketerraDom();
       } else if (hudEl) {
         hudEl.remove();
         hudEl = null;
@@ -755,6 +865,31 @@ isInternalWrite: false
     await loadSettings();
     checkRouteAndMount();
 
+    // Publish the initial gear state so listeners can learn the current 2x12 position right away
+    // (e.g. karoo-bridge, which forwards gears to an external bike computer). Same shape as shift events.
+    {
+      const fTeeth = config.front[state.frontIdx];
+      const rTeeth = config.rear[state.rearIdx];
+      terra.bus.emit('realistic-gears:changed', {
+        frontIndex: state.frontIdx + 1,
+        frontTotal: config.front.length,
+        frontTeeth: fTeeth,
+        rearIndex: state.rearIdx + 1,
+        rearTotal: config.rear.length,
+        rearTeeth: rTeeth,
+        ratio: Number((fTeeth / rTeeth).toFixed(2)),
+        source: 'init'
+      });
+      terra.log(`Init gear state published: ${state.frontIdx + 1}-${state.rearIdx + 1} (${fTeeth}x${rTeeth}T)`);
+    }
+
+    const domObserver = new MutationObserver(() => {
+      if (location.pathname.includes('/ride')) {
+        scanBiketerraDom();
+      }
+    });
+    domObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+
     terra.onNavigate(() => checkRouteAndMount());
     terra.settings.onChange(async () => {
       await loadSettings();
@@ -762,6 +897,8 @@ isInternalWrite: false
       updateHud();
     });
     terra.onCleanup(() => {
+      domObserver.disconnect();
       if (hudEl) hudEl.remove();
+      restoreHiddenGearElements();
     });
 })(terra);
