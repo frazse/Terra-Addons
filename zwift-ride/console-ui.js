@@ -66,16 +66,16 @@ function layoutDashboard() {
         const headText = (zone.querySelector('.zone-head')?.textContent || '').trim().toLowerCase();
 
         // COLUMN 1 (Left): "Coming up"
-        if (headText === 'coming up' || zone.querySelector('.event-row')) {
+        if (headText === 'coming up' || zone.querySelector('.itin-row, .event-row')) {
             zone.classList.add('btz-dash-col-events');
             zone.style.gridColumn = '1';
             zone.style.gridRow = '2';
 
-            zone.querySelectorAll('.event-row').forEach((row) => {
+            zone.querySelectorAll('.itin-row, .event-row').forEach((row) => {
                 row.classList.add('btz-dash-event-row');
-                const thumbLink = row.querySelector('a.event-row-thumb');
+                const thumbLink = row.querySelector('a.itin-thumb, a.event-row-thumb');
                 if (thumbLink) thumbLink.dataset.btzSkip = '1';
-                const titleLink = row.querySelector('.event-row-title a');
+                const titleLink = row.querySelector('.itin-title a, .event-row-title a');
                 if (titleLink) titleLink.classList.add('btz-dash-event-target');
             });
                 continue;

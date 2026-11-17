@@ -58,9 +58,17 @@ function shouldSkipForController(el) {
     return true;
   }
 
-  // 3. Skip secondary "VIEW SERIES" pills inside event cards so each event is 1 clean stop
+  // 3. Skip secondary "VIEW SERIES" pills & series thumbnails inside event cards so each event is 1 clean stop
   const txt = (el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
-  if (txt === 'view series') return true;
+  if (
+    txt === 'view series' ||
+    el.classList.contains('itin-thumb') ||
+    el.classList.contains('event-row-thumb') ||
+    el.classList.contains('itin-link') ||
+    (el.getAttribute('href')?.includes('/series/') && el.closest('.itin-row, .event-row'))
+  ) {
+    return true;
+  }
 
   // 4. Skip the 4 mini chart toggle pills on Dashboard (Distance / Climbing / Time / Rides)
   if ((location.pathname === '/dashboard' || location.pathname === '/dashboard/') &&
