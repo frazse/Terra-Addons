@@ -751,16 +751,37 @@
         });
 
         let jar = extractCookiesFromHeaders(loginPageRes.headers);
-        const loginDoc = new DOMParser().parseFromString(loginPageRes.body || '', 'text/html');
-        const csrfInput = loginDoc.querySelector('input[name="_csrf_token"]');
-        const csrfToken = csrfInput ? csrfInput.getAttribute('value') || '' : '';
+        const loginBody = loginPageRes.body || '';
+        const loginDoc = new DOMParser().parseFromString(loginBody, 'text/html');
+
+        // Diagnostics: what did /login actually give us?
+        const hdrNames = Object.keys(loginPageRes.headers || {}).join(',');
+        const inputNames = [...loginDoc.querySelectorAll('input')].map(i => i.name || i.id || i.type).join(',');
+        terra.log(`[Suunto Export] GET /login status=${loginPageRes.status}, bodyLen=${loginBody.length}, headers=[${hdrNames}], inputs=[${inputNames}], title="${loginDoc.title}"`);
+
+        // Cloudflare bot challenge: a script cannot pass it, so don't bother posting a login
+        const cfBlocked = loginPageRes.status === 403 || loginPageRes.status === 503 ||
+        !!(loginPageRes.headers && loginPageRes.headers['cf-mitigated']) ||
+        /just a moment/i.test(loginDoc.title || '');
+        if (cfBlocked) {
+            throw new Error('Runalyze login page is behind a Cloudflare challenge, so automatic login cannot work. Log in via your browser and paste PHPSESSID and REMEMBERME into the Runalyze Cookie Header setting.');
+        }
+
+        // More tolerant CSRF lookup
+        const csrfInput =
+        loginDoc.querySelector('input[name="_csrf_token"]') ||
+        loginDoc.querySelector('input[name*="csrf" i]') ||
+        loginDoc.querySelector('input[type="hidden"][name*="token" i]');
+        const csrfName = csrfInput?.getAttribute('name') || '_csrf_token';
+        const csrfToken = csrfInput?.getAttribute('value') ||
+        loginDoc.querySelector('meta[name*="csrf" i]')?.getAttribute('content') || '';
 
         const loginFields = {
             _username: '{{setting:runalyze_username}}',
             _password: '{{setting:runalyze_password}}',
             _remember_me: 'on'
         };
-        if (csrfToken) loginFields._csrf_token = csrfToken;
+        if (csrfToken) loginFields[csrfName] = csrfToken;
 
         const bodyParts = Object.entries(loginFields).map(([k, v]) => {
             if (String(v).startsWith('{{setting:')) return `${encodeURIComponent(k)}=${v}`;
@@ -792,7 +813,9 @@
         terra.log(`[Suunto Export] Login POST status=${postLoginRes.status}, redirect="${redirectLocation}", hasPHPSESSID=${!!jar.PHPSESSID}, hasREMEMBERME=${!!jar.REMEMBERME}`);
 
         if (redirectLocation.includes('/login') || (!jar.REMEMBERME && !jar.PHPSESSID)) {
-            throw new Error(`Runalyze login rejected (redirected to ${redirectLocation || 'login'}). Check your username/password.`);
+            throw new Error(csrfToken
+            ? `Runalyze login rejected (redirected to ${redirectLocation || 'login'}). Check your username/password.`
+            : `Runalyze login failed and no CSRF token was found on the login page (GET status ${loginPageRes.status}). The login form likely changed.`);
         }
 
         return { cookieStr: await saveCookieJar(jar), jar };
