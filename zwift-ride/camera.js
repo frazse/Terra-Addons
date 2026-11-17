@@ -1,13 +1,13 @@
 /* ---------- camera control (ride pages) ----------
-   Camera actions are stored in the ride map as pseudo-keys { code: 'Cam:<action>', key: 'cam' }, so they work in
-   normal AND modifier layers with no changes to the layer logic. nav.js's fire() routes them here instead of
-   dispatching a KeyboardEvent. While an orbit/tilt action is held we emulate a middle-button drag on the game
-   canvas (mouse-move deltas); zoom emulates wheel ticks. */
+ C amera actions are sto*red in the ride map as pseudo-keys { code: 'Cam:<action>', key: 'cam' }, so they work in
+ normal AND modifier layers with no changes to the layer logic. nav.js's fire() routes them here instead of
+ dispatching a KeyboardEvent. While an orbit/tilt action is held we emulate a middle-button drag on the game
+ canvas (mouse-move deltas); zoom emulates wheel ticks. */
 
 const CAM_ACTIONS = [
   ['orbit_left', 'Orbit \u2190'], ['orbit_right', 'Orbit \u2192'],
-  ['tilt_up', 'Tilt \u2191'], ['tilt_down', 'Tilt \u2193'],
-  ['zoom_in', 'Zoom in'], ['zoom_out', 'Zoom out'],
+['tilt_up', 'Tilt \u2191'], ['tilt_down', 'Tilt \u2193'],
+['zoom_in', 'Zoom in'], ['zoom_out', 'Zoom out'],
 ];
 const CAM_LABEL = Object.fromEntries(CAM_ACTIONS);
 const CAM_DRAG_SPEED = 450;  // px/s of emulated mouse movement while held
@@ -27,6 +27,33 @@ function camCanvas() {
   return best;
 }
 
+// Clear focus from any UI button the mouse previously clicked and park virtual hover at canvas center
+function camCenterAndDefocus(target) {
+  if (document.activeElement && document.activeElement !== document.body && document.activeElement !== target) {
+    try { document.activeElement.blur(); } catch {}
+  }
+  if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
+  try { target.focus({ preventScroll: true }); } catch {}
+
+  const r = target.getBoundingClientRect();
+  const cx = Math.round(r.left + r.width / 2);
+  const cy = Math.round(r.top + r.height / 2);
+
+  // Move virtual pointer to center with no buttons pressed first so the game updates its hover position
+  const moveInit = {
+    bubbles: true, cancelable: true, composed: true, view: window,
+    clientX: cx, clientY: cy, screenX: cx, screenY: cy,
+    button: -1, buttons: 0,
+  };
+  if (CAM_EVENTS !== 'mouse') {
+    target.dispatchEvent(new PointerEvent('pointermove', { ...moveInit, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+  }
+  if (CAM_EVENTS !== 'pointer') {
+    target.dispatchEvent(new MouseEvent('mousemove', moveInit));
+  }
+  return { r, cx, cy };
+}
+
 function camSet(action, on) {
   if (on) camOn.add(action); else camOn.delete(action);
   if (!camOn.size) { camStop(); return; }
@@ -37,50 +64,75 @@ function camFire(target, kind, x, y, mx, my) {
   // kind: 'down' | 'move' | 'up'
   const base = {
     bubbles: true, cancelable: true, composed: true, view: window,
-    clientX: x, clientY: y, screenX: x, screenY: y,
-    button: kind === 'move' ? -1 : 1, buttons: kind === 'up' ? 0 : 4,
+    clientX: Math.round(x), clientY: Math.round(y),
+    screenX: Math.round(x), screenY: Math.round(y),
+    button: kind === 'move' ? -1 : 1,
+    buttons: kind === 'up' ? 0 : 4,
   };
   const send = (e) => {
     if (kind === 'move') {
       // movementX/Y aren't honoured as init values everywhere; force them.
       try {
-        Object.defineProperty(e, 'movementX', { value: mx });
-        Object.defineProperty(e, 'movementY', { value: my });
+        Object.defineProperty(e, 'movementX', { value: Math.round(mx) });
+        Object.defineProperty(e, 'movementY', { value: Math.round(my) });
       } catch {}
     }
     target.dispatchEvent(e);
   };
   if (CAM_EVENTS !== 'mouse') {
-    send(new PointerEvent('pointer' + kind, { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true, movementX: mx, movementY: my }));
+    send(new PointerEvent('pointer' + kind, { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true, movementX: Math.round(mx), movementY: Math.round(my) }));
   }
   if (CAM_EVENTS !== 'pointer') {
-    send(new MouseEvent('mouse' + kind, { ...base, movementX: mx, movementY: my }));
+    send(new MouseEvent('mouse' + kind, { ...base, movementX: Math.round(mx), movementY: Math.round(my) }));
   }
 }
 
 function camBegin(target) {
-  const r = target.getBoundingClientRect();
-  camDrag = { target, r, x: r.left + r.width / 2, y: r.top + r.height / 2 };
-  camFire(target, 'down', camDrag.x, camDrag.y, 0, 0);
+  const { r, cx, cy } = camCenterAndDefocus(target);
+  camDrag = { target, r, x: cx, y: cy };
+  camFire(target, 'down', cx, cy, 0, 0);
   dlog('camera drag start');
 }
+
 function camMove(dx, dy) {
   const d = camDrag;
-  d.x = Math.min(d.r.right - 4, Math.max(d.r.left + 4, d.x + dx));
-  d.y = Math.min(d.r.bottom - 4, Math.max(d.r.top + 4, d.y + dy));
+  const nextX = d.x + dx;
+  const nextY = d.y + dy;
+
+  // Keep virtual drag strictly inside the middle 40% of the canvas (away from all HUD edges).
+  // If it reaches the boundary, release and re-grab at exact center seamlessly.
+  const minX = d.r.left + d.r.width * 0.3;
+  const maxX = d.r.left + d.r.width * 0.7;
+  const minY = d.r.top + d.r.height * 0.3;
+  const maxY = d.r.top + d.r.height * 0.7;
+
+  if (nextX < minX || nextX > maxX || nextY < minY || nextY > maxY) {
+    const target = d.target;
+    camEnd();
+    camBegin(target);
+    return;
+  }
+
+  d.x = nextX;
+  d.y = nextY;
   camFire(d.target, 'move', d.x, d.y, dx, dy);
 }
+
 function camEnd() {
   if (!camDrag) return;
-  camFire(camDrag.target, 'up', camDrag.x, camDrag.y, 0, 0);
+  const { target, r, x, y } = camDrag;
+  camFire(target, 'up', x, y, 0, 0);
+  // Park virtual pointer back at exact canvas center on release
+  camCenterAndDefocus(target);
   camDrag = null;
   dlog('camera drag end');
 }
+
 function camWheel(target, deltaY) {
-  const r = target.getBoundingClientRect();
+  const { cx, cy } = camCenterAndDefocus(target);
   target.dispatchEvent(new WheelEvent('wheel', {
     bubbles: true, cancelable: true, composed: true, view: window,
-    clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, deltaY, deltaMode: 0,
+    clientX: cx, clientY: cy, deltaY, deltaMode: 0,
   }));
 }
 
