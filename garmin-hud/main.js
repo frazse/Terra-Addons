@@ -39,6 +39,66 @@
     return '#9ca3af';
   }
 
+  let colorProbeCtx = null;
+  const cssColorCache = new Map();
+
+  function parseCssRgb(c) {
+    if (!c || typeof c !== 'string') return null;
+    const key = c.trim();
+    if (!key) return null;
+    if (cssColorCache.has(key)) return cssColorCache.get(key);
+
+    let out = null;
+    let m = key.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i);
+    if (m) {
+      out = [Math.round(Number(m[1])), Math.round(Number(m[2])), Math.round(Number(m[3]))];
+    } else if ((m = key.match(/^#([0-9a-f]{6})$/i))) {
+      const h = m[1];
+      out = [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+    } else if (typeof document !== 'undefined') {
+      try {
+        if (!colorProbeCtx) {
+          const pc = document.createElement('canvas');
+          pc.width = 1;
+          pc.height = 1;
+          colorProbeCtx = pc.getContext('2d', { willReadFrequently: true });
+        }
+        if (colorProbeCtx) {
+          colorProbeCtx.clearRect(0, 0, 1, 1);
+          colorProbeCtx.fillStyle = 'rgba(0, 0, 0, 0)';
+          colorProbeCtx.fillStyle = key;
+          colorProbeCtx.fillRect(0, 0, 1, 1);
+          const d = colorProbeCtx.getImageData(0, 0, 1, 1).data;
+          if (d && d[3] > 0) out = [d[0], d[1], d[2]];
+        }
+      } catch {}
+    }
+    cssColorCache.set(key, out);
+    return out;
+  }
+
+  function resolveValueColor(valueNode, valueStyle) {
+    const candidates = [valueStyle && valueStyle.color];
+    if (valueNode && typeof valueNode.querySelectorAll === 'function') {
+      for (const child of valueNode.querySelectorAll('*')) {
+        candidates.push(window.getComputedStyle(child).color);
+      }
+    }
+    let brightFallback = null;
+    for (const c of candidates) {
+      const rgb = parseCssRgb(c);
+      if (!rgb) continue;
+      const [r, g, b] = rgb;
+      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+      const chroma = Math.max(r, g, b) - Math.min(r, g, b);
+      // Preserve colored state indicators (e.g. red braking speed text) and bright text;
+      // fall back to white only if the page's color would be too dark on #18181b.
+      if (chroma >= 40) return `rgb(${r}, ${g}, ${b})`;
+      if (!brightFallback && luma >= 55) brightFallback = `rgb(${r}, ${g}, ${b})`;
+    }
+    return brightFallback || '#ffffff';
+  }
+
   async function loadSettings() {
     if (typeof terra === 'undefined' || !terra.settings) return;
     const s = await terra.settings.all();
@@ -94,7 +154,14 @@
     }
   }
 
-  const historyLength = 120; // 60s rolling window at the ~2Hz feed rate
+  const WINDOW_MS = 60000;   // 60s rolling window across all sample rates
+  const BT_SAMPLE_MS = 100;  // 10Hz when btApp.riderController is active
+  const DOM_SAMPLE_MS = 1000;
+  const initNow = performance.now();
+  const makeBaseline = (color) => [
+    { val: 0, color, t: initNow - WINDOW_MS },
+    { val: 0, color, t: initNow },
+  ];
 
   const graphs = {
     'W': {
@@ -105,7 +172,7 @@
         ctx.lineTo(11, 22); ctx.lineTo(21, 10); ctx.lineTo(12, 10); ctx.closePath();
         ctx.stroke(); ctx.restore();
       },
-      data: Array.from({length: historyLength}, () => ({val: 0, color: 'rgb(0,158,128)'})), minScale: 350, type: 'power', allTimeSum: 0, allTimeCount: 0, allTimeMax: 0
+      data: makeBaseline('rgb(0,158,128)'), minScale: 350, type: 'power', allTimeSum: 0, allTimeCount: 0, allTimeMax: 0
     },
     'rpm': {
       drawIcon: (ctx, x, y, size) => {
@@ -115,7 +182,7 @@
         ctx.beginPath(); ctx.arc(12, 12, 3, 0, Math.PI * 2); ctx.stroke();
         ctx.restore();
       },
-      data: Array.from({length: historyLength}, () => ({val: 0, color: '#3b82f6'})), minScale: 120, type: 'cadence', allTimeSum: 0, allTimeCount: 0, allTimeMax: 0
+      data: makeBaseline('#3b82f6'), minScale: 120, type: 'cadence', allTimeSum: 0, allTimeCount: 0, allTimeMax: 0
     },
     'bpm': {
       drawIcon: (ctx, x, y, size) => {
@@ -124,7 +191,7 @@
         ctx.fill(new Path2D('M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z'));
         ctx.restore();
       },
-      data: Array.from({length: historyLength}, () => ({val: 0, color: 'rgb(0,158,128)'})), minScale: 190, type: 'hr', allTimeSum: 0, allTimeCount: 0, allTimeMax: 0
+      data: makeBaseline('rgb(0,158,128)'), minScale: 190, type: 'hr', allTimeSum: 0, allTimeCount: 0, allTimeMax: 0
     },
     'kph': {
       drawIcon: (ctx, x, y, size) => {
@@ -134,50 +201,171 @@
         ctx.fillStyle = '#3B82F6'; ctx.beginPath(); ctx.arc(12, 17.5, 1.5, 0, Math.PI * 2); ctx.fill();
         ctx.restore();
       },
-      data: Array.from({length: historyLength}, () => ({val: 0, color: '#22c55e'})), minScale: 50,  type: 'speed', allTimeSum: 0, allTimeCount: 0, allTimeMax: 0
+      data: makeBaseline('#22c55e'), minScale: 50,  type: 'speed', allTimeSum: 0, allTimeCount: 0, allTimeMax: 0
     }
   };
 
-  // ---- Live feed: prefer Biketerra's broadcast "ego" over scraping the page's stat text ----
-  // Frame: { ego: { speed (m/s), power (W), cadence, heartRate, ... }, riders: [...], timestamp }, ~2Hz.
-  let ego = null;
+  // ---- Live telemetry priority:
+  //   1. window.btApp.riderController (focalRider / ego)
+  //   2. biketerra-ride broadcast (terra.ride)
+  //   3. DOM scraping (.stat-cell .stat-value)
+  let rideFrame = null;
   let offRide = null;
   let lastFeedAt = 0;
+  let activeSource = null; // 'btApp' | 'ride' | 'dom'
   const FEED_FRESH_MS = 2500;
-  const EGO_BY_UNIT = {
-    'W':   (e) => (e && Number.isFinite(e.power)) ? e.power : null,
-    'rpm': (e) => (e && Number.isFinite(e.cadence)) ? e.cadence : null,
-    'bpm': (e) => (e && Number.isFinite(e.heartRate)) ? e.heartRate : null,
-    'kph': (e) => (e && Number.isFinite(e.speed)) ? e.speed * 3.6 : null
-  };
 
-  // The feed drives the HUD while it is delivering; frames older than this mean it is quiet
-  // (or never started), and the DOM fallback takes over.
-  const feedFresh = () => ego !== null && (performance.now() - lastFeedAt) < FEED_FRESH_MS;
+  function finiteNum(v) {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function pickNum(sources, keys) {
+    for (const src of sources) {
+      if (!src || typeof src !== 'object') continue;
+      for (const k of keys) {
+        const n = finiteNum(src[k]);
+        if (n !== null) return n;
+      }
+    }
+    return null;
+  }
+
+  function getBtController() {
+    const app = typeof window !== 'undefined' ? window.btApp : null;
+    return (app && (app.riderController || app.rideController)) || null;
+  }
+
+  function getBtRider(rc) {
+    if (!rc) return null;
+    return rc.focalRider || rc.ego || null;
+  }
+
+  function readBtMetric(rider, unit) {
+    if (!rider || typeof rider !== 'object') return null;
+    const srcs = [rider.sim, rider, rider.userData, rider.stats, rider.state, rider.telemetry];
+    if (unit === 'W')   return pickNum(srcs, ['power', 'watts', 'wattage']);
+    if (unit === 'rpm') return pickNum(srcs, ['cadence', 'cad', 'rpm', 'cadenceRpm']);
+    if (unit === 'bpm') return pickNum(srcs, ['heartRate', 'hr', 'heart_rate', 'bpm']);
+    if (unit === 'kph') {
+      const kph = pickNum(srcs, ['speedKph', 'speedKmh', 'speed_kmh', 'kph']);
+      if (kph !== null) return kph;
+      const ms = pickNum(srcs, ['speed', 'speedMs', 'vel']);
+      if (ms !== null) return ms * 3.6;
+      const sim = rider.sim;
+      if (sim && sim.velocity != null) {
+        if (typeof sim.velocity === 'number' && Number.isFinite(sim.velocity)) return sim.velocity * 3.6;
+        if (typeof sim.velocity === 'object') {
+          const vx = finiteNum(sim.velocity.x), vy = finiteNum(sim.velocity.y) || 0, vz = finiteNum(sim.velocity.z);
+          if (vx !== null && vz !== null) return Math.hypot(vx, vy, vz) * 3.6;
+        }
+      }
+    }
+    return null;
+  }
+
+  function btHasAnyMetric(rider) {
+    if (!rider) return false;
+    return readBtMetric(rider, 'W') !== null ||
+      readBtMetric(rider, 'rpm') !== null ||
+      readBtMetric(rider, 'bpm') !== null ||
+      readBtMetric(rider, 'kph') !== null;
+  }
+
+  function riderIdentity(rider) {
+    if (!rider || typeof rider !== 'object') return { id: null, name: '' };
+    const sim = rider.sim || {};
+    const cfg = rider.config || {};
+    const ud = rider.userData || {};
+    const id = sim.id ?? sim.athleteId ?? rider.id ?? rider.athleteId ?? null;
+    const first = String((ud.first_name ?? cfg.first_name) || '').trim();
+    const last = String((cfg.last_name ?? ud.last_name) || '').trim();
+    const name = `${first} ${last}`.trim().toLowerCase();
+    return { id, name };
+  }
+
+  function resolveFeedObject(rc, btRider) {
+    if (!rideFrame) return null;
+    const isSpectatingOther = !!(rc && rc.ego && btRider && btRider !== rc.ego);
+    if (btRider && (isSpectatingOther || window.location.pathname.includes('/spectate'))) {
+      const { id, name } = riderIdentity(btRider);
+      if (Array.isArray(rideFrame.riders)) {
+        for (const r of rideFrame.riders) {
+          if (!r || typeof r !== 'object') continue;
+          if (id != null && r.id != null && String(r.id) === String(id)) return r;
+          if (name && r.name && String(r.name).trim().toLowerCase() === name) return r;
+        }
+      }
+      if (isSpectatingOther) return null; // never leak own frame.ego onto another rider
+    }
+    return rideFrame.ego || null;
+  }
+
+  function readFeedMetric(feedObj, unit) {
+    if (!feedObj || typeof feedObj !== 'object') return null;
+    const srcs = [feedObj];
+    if (unit === 'W')   return pickNum(srcs, ['power', 'watts', 'wattage']);
+    if (unit === 'rpm') return pickNum(srcs, ['cadence', 'cad', 'rpm', 'cadenceRpm']);
+    if (unit === 'bpm') return pickNum(srcs, ['heartRate', 'hr', 'heart_rate', 'bpm']);
+    if (unit === 'kph') {
+      const kph = pickNum(srcs, ['speedKph', 'speedKmh', 'speed_kmh', 'kph']);
+      if (kph !== null) return kph;
+      const ms = pickNum(srcs, ['speed', 'speedMs', 'vel']);
+      if (ms !== null) return ms * 3.6;
+    }
+    return null;
+  }
+
+  // Frames older than FEED_FRESH_MS mean the biketerra-ride feed is quiet (or never started).
+  const feedFresh = () => rideFrame !== null && (performance.now() - lastFeedAt) < FEED_FRESH_MS;
+
+  function noteSource(src) {
+    if (activeSource === src || typeof terra === 'undefined' || !terra.log) return;
+    activeSource = src;
+    if (src === 'btApp') {
+      terra.log('[Garmin HUD] Live: driving the HUD from btApp.riderController (focal/ego) (~10Hz).');
+    } else if (src === 'ride') {
+      terra.log('[Garmin HUD] Live: driving the HUD from biketerra-ride fallback (~2Hz).');
+    } else if (src === 'dom') {
+      terra.log('[Garmin HUD] Fallback: driving the HUD from DOM scraping (~1Hz).');
+    }
+  }
 
   function initRideFeed() {
     if (typeof terra === 'undefined' || !terra.ride) return;
-    // Seed from the newest in-page frame if the ride is already in flight.
     if (terra.ride.latest) {
       const seed = terra.ride.latest();
-      if (seed && seed.ego) ego = seed.ego;
+      if (seed) {
+        rideFrame = seed;
+        if (seed.timestamp && Math.abs(Date.now() - seed.timestamp) < FEED_FRESH_MS) {
+          lastFeedAt = performance.now();
+        }
+      }
     }
     if (terra.ride.onRide) {
       offRide = terra.ride.onRide((frame) => {
-        if (!frame || !frame.ego) return;
-        if (lastFeedAt === 0) terra.log('[Garmin HUD] Live: driving the HUD from the biketerra-ride ego (~2Hz).');
-        ego = frame.ego;
+        if (!frame) return;
+        rideFrame = frame;
         lastFeedAt = performance.now();
-        tick();
+        const rc = getBtController();
+        const btRider = getBtRider(rc);
+        if (!btHasAnyMetric(btRider)) {
+          noteSource('ride');
+          tick();
+        }
       });
     }
   }
 
-  function readMetric(unit, valueNode) {
-    const getter = EGO_BY_UNIT[unit];
-    if (getter && feedFresh()) {
-      const v = getter(ego);
-      if (v != null) return v;
+  function readMetric(unit, valueNode, rc, btRider, feedObj, isFeedFresh) {
+    if (btRider) {
+      const btVal = readBtMetric(btRider, unit);
+      if (btVal !== null) return btVal;
+    }
+    if (isFeedFresh && feedObj) {
+      const feedVal = readFeedMetric(feedObj, unit);
+      if (feedVal !== null) return feedVal;
     }
     return parseFloat(valueNode.innerText) || 0;
   }
@@ -185,8 +373,9 @@
   let renderInterval = null;
 
   // Sample every stat cell once: compute the live value, update the all-time stats, and
-  // push it into the rolling buffer.
-  function sampleOnce() {
+  // push it into the 60s time-windowed rolling buffer.
+  function sampleOnce(rc, btRider, feedObj, isFeedFresh, now) {
+    const windowStart = now - WINDOW_MS;
     document.querySelectorAll('.stat-cell').forEach((cell) => {
       const valueNode = cell.querySelector('.stat-value');
       const unitNode = cell.querySelector('.stat-unit');
@@ -196,7 +385,7 @@
       const graphInfo = graphs[unit];
       if (!graphInfo) return;
 
-      const val = readMetric(unit, valueNode);
+      const val = readMetric(unit, valueNode, rc, btRider, feedObj, isFeedFresh);
 
       if (val > 0) {
         graphInfo.allTimeSum += val;
@@ -206,13 +395,16 @@
         }
       }
 
-      graphInfo.data.push({ val: val, color: getIntervalsColor(val, graphInfo.type) });
-      graphInfo.data.shift();
+      graphInfo.data.push({ val, color: getIntervalsColor(val, graphInfo.type), t: now });
+      while (graphInfo.data.length > 2 && graphInfo.data[1].t < windowStart) {
+        graphInfo.data.shift();
+      }
     });
   }
 
   // Redraw every stat-cell graph from the rolling buffer.
-  function renderOnce() {
+  function renderOnce(rc, btRider, feedObj, isFeedFresh, now) {
+    const windowStart = now - WINDOW_MS;
     const statCells = document.querySelectorAll('.stat-cell');
 
     // Measure a "normal" sized cell (like Heart Rate) to establish a global baseline
@@ -233,7 +425,7 @@
       const graphInfo = graphs[unit];
       if (!graphInfo) return;
 
-      const val = readMetric(unit, valueNode);
+      const val = readMetric(unit, valueNode, rc, btRider, feedObj, isFeedFresh);
 
       const valueStyle = window.getComputedStyle(valueNode);
       const unitStyle = window.getComputedStyle(unitNode);
@@ -279,21 +471,39 @@
       const height = displayHeight;
       ctx.clearRect(0, 0, width, height);
 
-      const validRollingVals = graphInfo.data.map(d => d.val).filter(v => v > 0);
-      const windowMax = validRollingVals.length ? Math.max(...validRollingVals) : 0;
+      let windowMax = 0;
+      for (const d of graphInfo.data) {
+        if (d.t >= windowStart && d.val > windowMax) windowMax = d.val;
+      }
       const scaleMax = Math.max(graphInfo.minScale, windowMax);
 
       const allTimeAvg = graphInfo.allTimeCount > 0 ? Math.round(graphInfo.allTimeSum / graphInfo.allTimeCount) : 0;
       const allTimeMax = Math.round(graphInfo.allTimeMax);
 
-      for (let i = 0; i < historyLength - 1; i++) {
-        const pt1 = graphInfo.data[i];
-        const pt2 = graphInfo.data[i + 1];
+      const pts = graphInfo.data;
+      for (let i = 0; i < pts.length - 1; i++) {
+        const pt1 = pts[i];
+        const pt2 = pts[i + 1];
 
-        const x1 = (i / (historyLength - 1)) * width;
-        const y1 = height - ((pt1.val / scaleMax) * graphHeight);
-        const x2 = ((i + 1) / (historyLength - 1)) * width;
-        const y2 = height - ((pt2.val / scaleMax) * graphHeight);
+        const x1Raw = ((pt1.t - windowStart) / WINDOW_MS) * width;
+        const x2Raw = ((pt2.t - windowStart) / WINDOW_MS) * width;
+        if (x2Raw <= 0 || x1Raw >= width) continue;
+
+        let x1 = x1Raw, v1 = pt1.val;
+        if (x1 < 0 && pt2.t > pt1.t) {
+          const frac = (windowStart - pt1.t) / (pt2.t - pt1.t);
+          v1 = pt1.val + (pt2.val - pt1.val) * frac;
+          x1 = 0;
+        }
+        let x2 = x2Raw, v2 = pt2.val;
+        if (x2 > width && pt2.t > pt1.t) {
+          const frac = (now - pt1.t) / (pt2.t - pt1.t);
+          v2 = pt1.val + (pt2.val - pt1.val) * frac;
+          x2 = width;
+        }
+
+        const y1 = height - ((v1 / scaleMax) * graphHeight);
+        const y2 = height - ((v2 / scaleMax) * graphHeight);
 
         ctx.beginPath();
         ctx.moveTo(x1, height);
@@ -320,10 +530,10 @@
       const iconSize = baseFontSize * 0.95;
       graphInfo.drawIcon(ctx, paddingX, (height - graphHeight) / 2, iconSize);
 
-      const valStr = (unit === 'kph') ? val.toFixed(1) : val.toString();
+      const valStr = (unit === 'kph') ? val.toFixed(1) : Math.round(val).toString();
 
       ctx.font = `bold ${baseFontSize}px ${valueFontFamily}`;
-      ctx.fillStyle = '#ffffff';
+      ctx.fillStyle = resolveValueColor(valueNode, valueStyle);
       ctx.textAlign = 'left';
 
       const textOffset = paddingX + iconSize + (baseFontSize * 0.15);
@@ -345,17 +555,34 @@
   }
 
   function tick() {
-    sampleOnce();
-    renderOnce();
+    const now = performance.now();
+    const rc = getBtController();
+    const btRider = getBtRider(rc);
+    const isFeedFresh = feedFresh();
+    const feedObj = isFeedFresh ? resolveFeedObject(rc, btRider) : null;
+    sampleOnce(rc, btRider, feedObj, isFeedFresh, now);
+    renderOnce(rc, btRider, feedObj, isFeedFresh, now);
   }
 
-  // Fallback cadence: while frames are arriving, the feed drives ticks at its own rate (~2Hz),
-  // so this only samples when the feed has gone quiet (or never started).
+  // Primary loop (~10Hz when btApp.riderController is active; ~1Hz for DOM fallback).
+  // While btApp is absent and biketerra-ride frames are arriving, onRide drives ticks directly.
+  let lastDomTickAt = 0;
   function startHudLoop() {
     renderInterval = setInterval(() => {
+      const rc = getBtController();
+      const btRider = getBtRider(rc);
+      if (btHasAnyMetric(btRider)) {
+        noteSource('btApp');
+        tick();
+        return;
+      }
       if (feedFresh()) return;
+      const now = performance.now();
+      if (now - lastDomTickAt < DOM_SAMPLE_MS - 20) return;
+      lastDomTickAt = now;
+      if (document.querySelector('.stat-cell')) noteSource('dom');
       tick();
-    }, 1000);
+    }, BT_SAMPLE_MS);
   }
 
   (async () => {
