@@ -43,6 +43,7 @@ const DEF = {
     up: [UP], down: [DOWN], left: [LEFT], right: [RIGHT],
     lever_l_pos: [LEFT], lever_l_neg: [LEFT], lever_r_pos: [RIGHT], lever_r_neg: [RIGHT],
     a: [KEY('Enter', 'Enter')], b: [KEY('KeyB', 'b')], y: [KEY('KeyP', 'p')], z: [KEY('KeyC', 'c')],
+    onoff_r: [KEY('KeyU', 'u')],
   },
   browse: {
     up: 'nav_up', down: 'nav_down', left: 'nav_left', right: 'nav_right',
@@ -66,8 +67,21 @@ let stopped = false;
 // the modifier's layer (anything the layer leaves unset falls back to the normal mapping).
 const MOD_CAPABLE = ['powerup_l', 'powerup_r'];
 const MOD_SHORT = { powerup_l: 'LB', powerup_r: 'RB' };
-DEF.mods = { powerup_l: false, powerup_r: false };
-DEF.layers = { powerup_l: { ride: {}, browse: {} }, powerup_r: { ride: {}, browse: {} } };
+DEF.mods = { powerup_l: true, powerup_r: false };
+DEF.layers = {
+  powerup_l: {
+    ride: {
+      a: [KEY('Cam:orbit_right', 'cam')],
+      b: [KEY('Cam:tilt_down', 'cam')],
+      down: [KEY('Cam:zoom_out', 'cam')],
+      up: [KEY('Cam:zoom_in', 'cam')],
+      y: [KEY('Cam:tilt_up', 'cam')],
+      z: [KEY('Cam:orbit_left', 'cam')],
+    },
+    browse: {},
+  },
+  powerup_r: { ride: {}, browse: {} },
+};
 const defaultCfg = () => clone(DEF);
 
 let layer = 'normal'; // which layer the settings table is showing: 'normal' or a modifier's input name
@@ -80,8 +94,12 @@ async function loadCfg() {
   for (const k of Object.keys(ride)) ride[k] = (ride[k] || []).slice(0, 1); // one key per input
   const layers = {};
   for (const m of MOD_CAPABLE) {
-    const s = (saved.layers && saved.layers[m]) || {};
-    layers[m] = { ride: { ...(s.ride || {}) }, browse: { ...(s.browse || {}) } };
+    const d = DEF.layers[m] || { ride: {}, browse: {} };
+    const s = saved.layers && saved.layers[m];
+    layers[m] = {
+      ride: { ...clone(s ? (s.ride || {}) : (d.ride || {})) },
+      browse: { ...clone(s ? (s.browse || {}) : (d.browse || {})) },
+    };
     for (const k of Object.keys(layers[m].ride)) layers[m].ride[k] = (layers[m].ride[k] || []).slice(0, 1);
   }
   return {

@@ -295,7 +295,7 @@ function buildPanel() {
       layer = 'normal';
       releaseAll();
       saveCfg();
-      for (const m of MOD_CAPABLE) modInputs[m].checked = false;
+      for (const m of MOD_CAPABLE) modInputs[m].checked = !!cfg.mods[m];
       INPUTS.forEach(([n]) => refresh(n));
       renderTabs();
     } }, 'Reset to defaults')),
