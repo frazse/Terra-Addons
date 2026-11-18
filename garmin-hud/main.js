@@ -185,8 +185,14 @@
     }
   }
 
-  const BT_SAMPLE_MS = 100;  // 10Hz when btApp.riderController is active
+  const BT_SAMPLE_MS = 100;    // 10Hz when btApp.riderController is active
   const DOM_SAMPLE_MS = 1000;
+  const makeFeedState = () => ({ val: null, feedTs: 0, btAt: 0 });
+  const feedMetricState = {
+    speed: makeFeedState(),
+    cadence: makeFeedState(),
+    hr: makeFeedState(),
+  };
   const initNow = performance.now();
   const makeBaseline = (color) => [
     { val: 0, color, t: initNow - 60000 },
@@ -393,8 +399,18 @@
 
   function readMetric(unit, valueNode, rc, btRider, feedObj, isFeedFresh) {
     let v = null;
-    if (btRider) v = readBtMetric(btRider, unit);
-    if (v === null && isFeedFresh && feedObj) v = readFeedMetric(feedObj, unit);
+    if (unit === 'W' || unit === 'w') {
+      // Power stays on btApp.riderController (~10Hz)
+      if (btRider) v = readBtMetric(btRider, unit);
+      if (v === null && isFeedFresh && feedObj) v = readFeedMetric(feedObj, unit);
+    } else {
+      // Speed, cadence, and heart rate prefer biketerra-ride (~2Hz).
+      // On /ride*, skip btApp fallback for cadence/HR so btApp's pre-start default (80 rpm) is never used.
+      if (isFeedFresh && feedObj) v = readFeedMetric(feedObj, unit);
+      if (v === null && btRider && ((unit === 'kph' || unit === 'mph') || window.location.pathname.includes('/spectate'))) {
+        v = readBtMetric(btRider, unit);
+      }
+    }
     if (v === null) {
       const domVal = parseFloat(valueNode.innerText) || 0;
       v = (unit === 'mph') ? domVal * 1.609344 : domVal; // normalize internal speed to km/h
@@ -429,6 +445,32 @@
       const unit = unitNode.innerText.trim().toLowerCase();
       const graphInfo = graphs[unit === 'w' ? 'W' : unit];
       if (!graphInfo) return;
+
+      const st = feedMetricState[graphInfo.type];
+      if (st) {
+        const feedTs = (isFeedFresh && rideFrame && rideFrame.timestamp) ? rideFrame.timestamp : 0;
+        if (st.val !== null) {
+          if (feedTs > 0) {
+            if (feedTs === st.feedTs) return;
+          } else if ((now - st.btAt) < 500) {
+            return;
+          }
+        }
+        const val = readMetric(unit === 'w' ? 'W' : unit, valueNode, rc, btRider, feedObj, isFeedFresh);
+        st.val = val;
+        if (feedTs > 0) st.feedTs = feedTs;
+        st.btAt = now;
+        if (val > 0) {
+          graphInfo.allTimeSum += val;
+          graphInfo.allTimeCount += 1;
+          if (val > graphInfo.allTimeMax) graphInfo.allTimeMax = val;
+        }
+        graphInfo.data.push({ val, color: getIntervalsColor(val, graphInfo.type), t: now });
+        while (graphInfo.data.length > 2 && graphInfo.data[1].t < windowStart) {
+          graphInfo.data.shift();
+        }
+        return;
+      }
 
       const val = readMetric(unit === 'w' ? 'W' : unit, valueNode, rc, btRider, feedObj, isFeedFresh);
 
@@ -476,7 +518,10 @@
       const graphInfo = graphs[unitKey];
       if (!graphInfo) return;
 
-      const val = readMetric(unitKey, valueNode, rc, btRider, feedObj, isFeedFresh);
+      const st = feedMetricState[graphInfo.type];
+      const val = (st && st.val !== null)
+        ? st.val
+        : readMetric(unitKey, valueNode, rc, btRider, feedObj, isFeedFresh);
       const displayVal = graphInfo.type === 'power' ? smoothedPower(val, now) : val;
 
       const valueStyle = window.getComputedStyle(valueNode);
@@ -654,6 +699,7 @@
         await loadSettings();
         if (prevUnit !== speedUnit) {
           // Reset speed buffer when switching km/h <-> mph so curve doesn't mix units
+          feedMetricState.speed = makeFeedState();
           speedGraph.data = makeBaseline('#22c55e');
           speedGraph.allTimeSum = 0;
           speedGraph.allTimeCount = 0;
