@@ -445,7 +445,8 @@ class WahooBridge {
     this._lastCpOpcode = undefined;
     this.pending = new Map(); // seq → {resolve, reject, timer, label}
     this.timer = null;
-    this.backoff = 2000;
+    this.backoff = 1000;
+    this.attempts = 0;
     this._nextReconnectMs = null; // one-shot delay override (kickr session-release grace)
     this._lastDataLog = 0;
     this._dataSuppressed = 0;
@@ -487,10 +488,14 @@ class WahooBridge {
     let ok = false;
     let conn = null; // hoisted so the catch below can close a socket that never became a WFTNP session
     try {
+      this.attempts++;
       const s = (await this.terra.settings.all()) || {};
       const configured = Math.round(Number(s.port));
       const first = (Number.isInteger(configured) && configured > 0) ? configured : (this.lastPort || 36866);
-      const candidates = [first, 36866, 36867].filter((p, i, a) => a.indexOf(p) === i);
+      // Avoid hanging 4s on 36867 (_zwift-protocol) on the very first try if 36866
+      // is just finishing a page-reload release; only fall back to 36867 on retries.
+      const baseCandidates = (this.attempts === 1 && first !== 36867) ? [first, 36866] : [first, 36866, 36867];
+      const candidates = baseCandidates.filter((p, i, a) => a.indexOf(p) === i);
       let failed = null;
       let lastErr = null;
       for (const port of candidates) {
@@ -522,8 +527,9 @@ class WahooBridge {
       this._failPending('reconnecting');
       this.log('tcp connected (' + conn + ') — WFTNP port ' + this.lastPort);
       await this.discover();
+      this.attempts = 0;
       this.badPort = null;
-      this.backoff = 2000;
+      this.backoff = 1000;
       ok = true;
     } catch (e) {
       if (conn) { // connected, but never became a WFTNP session
@@ -631,10 +637,16 @@ class WahooBridge {
     this._teardown(conn, 'rider detached').catch((e) => this.log('detach: ' + ((e && e.message) || e)));
   }
 
-  // Unload-safe close: no awaits, no waiting for replies. Send control release,
-  // then close in the same tick (TCP keeps the order, so the Kickr sees 0x01 before the FIN).
+  // Unload-safe close: no awaits, no waiting for replies. Unsubscribe active
+  // notifications, send control release, then close in the same tick (TCP keeps
+  // the order, so the Kickr sees unsubscribes + 0x01 before the FIN).
   _fastClose(conn) {
     if (!conn || !this.terra) return;
+    for (const wire of this.enabled) {
+      const uSeq = (this.seq = (this.seq % 255) + 1);
+      try { this.terra.tcp.send(conn, wftnp(WFTNP.ENABLE, uSeq, 0, concat(wire, [0x00]))).catch(() => {}); } catch (_) {}
+    }
+    this.enabled = [];
     const seq = (this.seq = (this.seq % 255) + 1);
     try { this.terra.tcp.send(conn, wftnp(WFTNP.WRITE, seq, 0, concat(WIRE_2AD9, [0x01]))).catch(() => {}); } catch (_) {}
     try { Promise.resolve(this.terra.tcp.close(conn)).catch(() => {}); } catch (_) {}
@@ -647,7 +659,8 @@ class WahooBridge {
     const conn = this.conn;
     this.conn = null;
     this._failPending('restart');
-    this.backoff = 2000;
+    this.attempts = 0;
+    this.backoff = 1000;
     if (conn && this.terra) {
       try { await this._teardown(conn, 'settings changed'); }
       catch (e) { this.log('teardown: ' + (e && e.message || e)); }
@@ -677,6 +690,7 @@ class WahooBridge {
     }
     this.log('services: ' + (seen.join(', ') || '(none 16-bit)'));
     this.enabled = [];
+    let timeouts = 0;
     for (const [label, wire] of [
       ['2A63', WIRE_2A63],
       ['2AD9', WIRE_2AD9],
@@ -685,11 +699,17 @@ class WahooBridge {
       ['fc82-vs', WIRE_VS],
     ]) {
       try {
-        await this.request(WFTNP.ENABLE, concat(wire, [0x01]), 'enable ' + label, 3000);
+        await this.request(WFTNP.ENABLE, concat(wire, [0x01]), 'enable ' + label, 1500);
         this.enabled.push(wire);
+        timeouts = 0;
       } catch (e) {
-        this.log(label + ': ' + e.message); // missing char is fine — just unused
+        const msg = (e && e.message) || String(e);
+        this.log(label + ': ' + msg); // missing char is fine — just unused
+        if (/timeout/i.test(msg) && ++timeouts >= 2 && this.enabled.length === 0) break;
       }
+    }
+    if (this.enabled.length === 0) {
+      throw new Error('no characteristics enabled (Kickr session busy)');
     }
     this.log('ready — Kickr traffic will be relayed');
   }
@@ -973,9 +993,10 @@ if (typeof navigator !== 'undefined' && navigator.bluetooth && typeof navigator.
         const d = ensureDevice();
         registerMock(d);
         if (d.gatt) d.gatt.connected = true; // rider connects next; bind early (realistic-gears etc.)
-  try { if (typeof window !== 'undefined' && window.__terraSettled) window.__terraSettled(true); } catch (e) { /* noop */ }
-  bridge.log('pairing rider with the Wi-Fi Kickr mock (' + d.name + ')');
-  return d;
+        try { if (typeof window !== 'undefined') window.__terraLastPaired = d.id; } catch (e) { /* noop */ }
+        try { if (typeof window !== 'undefined' && window.__terraSettled) window.__terraSettled(true); } catch (e) { /* noop */ }
+        bridge.log('pairing rider with the Wi-Fi Kickr mock (' + d.name + ')');
+        return d;
       }
       return origRequestDevice.apply(this, arguments);
     };
