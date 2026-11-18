@@ -1,0 +1,351 @@
+/* Ghost Rider addon styles — no backdrop-filter (Vulkan/ANGLE safe) */
+
+.tr-gr-card {
+  position: fixed;
+  top: 74px;
+  left: 16px;
+  z-index: 950;
+  width: 268px;
+  border-radius: 12px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  background: rgba(15, 23, 42, 0.88);
+  color: #f1f5f9;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  user-select: none;
+  pointer-events: auto;
+  overflow: hidden;
+}
+
+.tr-gr-card.compact {
+  width: 224px;
+}
+
+.tr-gr-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  background: rgba(30, 41, 59, 0.72);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  cursor: grab;
+}
+
+.tr-gr-head:active {
+  cursor: grabbing;
+}
+
+.tr-gr-badge {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.22);
+  color: #7dd3fc;
+  flex-shrink: 0;
+}
+
+.tr-gr-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 11.5px;
+  color: #e2e8f0;
+}
+
+.tr-gr-icon-btn {
+  appearance: none;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.65);
+  color: #cbd5e1;
+  border-radius: 6px;
+  height: 22px;
+  min-width: 22px;
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 20px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tr-gr-icon-btn:hover {
+  background: rgba(56, 189, 248, 0.22);
+  color: #ffffff;
+  border-color: rgba(56, 189, 248, 0.45);
+}
+
+.tr-gr-body {
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.tr-gr-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 4px 0;
+}
+
+.tr-gr-hint {
+  font-size: 11px;
+  color: #94a3b8;
+  line-height: 1.35;
+}
+
+.tr-gr-load-btn {
+  appearance: none;
+  border: 1px dashed rgba(56, 189, 248, 0.55);
+  background: rgba(56, 189, 248, 0.14);
+  color: #bae6fd;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+}
+
+.tr-gr-load-btn:hover {
+  background: rgba(56, 189, 248, 0.26);
+  color: #ffffff;
+}
+
+.tr-gr-card.dragover {
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.55), 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+.tr-gr-gap-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.tr-gr-gap-time {
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.05;
+}
+
+.tr-gr-gap-time.ahead {
+  color: #4ade80;
+}
+
+.tr-gr-gap-time.behind {
+  color: #fb7185;
+}
+
+.tr-gr-gap-time.even {
+  color: #7dd3fc;
+}
+
+.tr-gr-gap-dist {
+  font-size: 12px;
+  font-weight: 700;
+  color: #cbd5e1;
+  font-variant-numeric: tabular-nums;
+}
+
+.tr-gr-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.tr-gr-stat {
+  background: rgba(30, 41, 59, 0.65);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 7px;
+  padding: 4px 6px;
+}
+
+.tr-gr-stat-l {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #94a3b8;
+}
+
+.tr-gr-stat-v {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #f8fafc;
+  font-variant-numeric: tabular-nums;
+}
+
+.tr-gr-bar-wrap {
+  position: relative;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.2);
+  margin: 2px 0;
+}
+
+.tr-gr-bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.35);
+}
+
+.tr-gr-dot {
+  position: absolute;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  border: 1.5px solid #0f172a;
+}
+
+.tr-gr-dot.ghost {
+  background: #38bdf8;
+  z-index: 2;
+}
+
+.tr-gr-dot.ego {
+  background: #f97316;
+  z-index: 3;
+}
+
+.tr-gr-controls {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.tr-gr-btn {
+  appearance: none;
+  flex: 1;
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(30, 41, 59, 0.85);
+  color: #e2e8f0;
+  border-radius: 6px;
+  padding: 4px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tr-gr-btn:hover {
+  background: rgba(56, 189, 248, 0.24);
+  border-color: rgba(56, 189, 248, 0.5);
+  color: #ffffff;
+}
+
+.tr-gr-btn.primary {
+  background: rgba(14, 165, 233, 0.28);
+  border-color: rgba(56, 189, 248, 0.5);
+  color: #e0f2fe;
+}
+
+.tr-gr-status {
+  font-size: 10.5px;
+  color: #94a3b8;
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.tr-gr-saved {
+  border-top: 1px solid rgba(148, 163, 184, 0.16);
+  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.tr-gr-saved-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(30, 41, 59, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+}
+
+.tr-gr-saved-item.active {
+  border-color: rgba(56, 189, 248, 0.6);
+  background: rgba(14, 165, 233, 0.16);
+}
+
+.tr-gr-saved-meta {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.tr-gr-saved-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #f1f5f9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tr-gr-saved-sub {
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+/* Floating 3D-projected nameplate above ghost */
+.tr-gr-ov {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 940;
+  overflow: hidden;
+}
+
+.tr-gr-plate {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: none;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(14, 116, 144, 0.86);
+  border: 1px solid rgba(125, 211, 252, 0.85);
+  color: #f0f9ff;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.45);
+  transform-origin: 50% 100%;
+  font-variant-numeric: tabular-nums;
+}
+
+.tr-gr-dot-2d {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.55);
+  border: 2px solid #e0f2fe;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.85);
+  transform-origin: 50% 50%;
+}
