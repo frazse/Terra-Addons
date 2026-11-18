@@ -62,6 +62,7 @@ const dlog = (...a) => { if (DEBUG) terra.log(...a); };
 
 let cfg = null;
 let rideEnabled = true;
+let autoVirtualShift = true;
 let stopped = false;
 let activeProfile = 'default';
 let customProfiles = {};

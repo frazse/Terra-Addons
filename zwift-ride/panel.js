@@ -12,7 +12,7 @@ function h(tag, props = {}, ...kids) {
 const logLines = [];
 let tabsEl, hintEl, profileSel;
 const modInputs = {};
-let panel, pill, pillDot, pillLabel, pillWrap, pillTimer, rideToggle, consoleUiToggle, statusEl, lastEl, logEl, savedEl, fallbackEl;
+let panel, pill, pillDot, pillLabel, pillWrap, pillTimer, rideToggle, consoleUiToggle, virtualShiftToggle, statusEl, lastEl, logEl, savedEl, fallbackEl;
 const rows = {};
 
 function ulog(...a) { // panel log only
@@ -107,6 +107,19 @@ function setConsoleUiEnabled(v) {
   );
   if (!v && typeof unwrapAthletePage === 'function') unwrapAthletePage();
   if (typeof scheduleConsoleUi === 'function') scheduleConsoleUi();
+}
+
+function setAutoVirtualShift(v) {
+  autoVirtualShift = v;
+  terra.storage.set('autoVirtualShift', v).then(
+    () => flash(v ? 'Virtual OBC shifter on' : 'Virtual OBC shifter off'),
+    (e) => flash('Save failed: ' + e)
+  );
+  if (v) {
+    if (typeof maybePairObcMock === 'function') maybePairObcMock();
+  } else {
+    if (typeof disconnectObcMock === 'function') disconnectObcMock();
+  }
 }
 
 const CMD_ACTIONS = [
@@ -376,6 +389,9 @@ function buildPanel() {
   consoleUiToggle = h('input', { type: 'checkbox', id: 'btz-console-ui-toggle' });
   consoleUiToggle.checked = consoleUiEnabled;
   consoleUiToggle.addEventListener('change', () => setConsoleUiEnabled(consoleUiToggle.checked));
+  virtualShiftToggle = h('input', { type: 'checkbox', id: 'btz-virtual-shift-toggle' });
+  virtualShiftToggle.checked = autoVirtualShift;
+  virtualShiftToggle.addEventListener('change', () => setAutoVirtualShift(virtualShiftToggle.checked));
 
   profileSel = h('select', { title: 'Binding profile preset' });
   profileSel.addEventListener('change', () => applyPresetById(profileSel.value));
@@ -393,6 +409,8 @@ function buildPanel() {
     h('p', {}, 'Turn off to let Biketerra handle the controller itself during rides. Navigation on other pages keeps working.'),
     h('label', { class: 'btz-toggle' }, consoleUiToggle, ' Enable Console UI (widescreen layout & bottom HUD)'),
     h('p', {}, 'Turn off on mobile devices or smaller screens to keep Biketerra\'s default layout and hide the bottom controller bar.'),
+    h('label', { class: 'btz-toggle' }, virtualShiftToggle, ' Virtual OpenBikeControl shifter (auto Virtual Shifting)'),
+    h('p', {}, 'Auto-pairs a virtual OpenBikeControl controller on ride start when a Zwift Ride controller or KICKR Wi-Fi is present, so Biketerra switches to Virtual Shifting on its own.'),
     h('h4', {}, 'Binding profile'),
     h('div', { class: 'btz-profile-row' },
       profileSel,

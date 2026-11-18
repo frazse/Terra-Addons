@@ -225,5 +225,270 @@ function register(device) {
 // When ride keys are off, hand the controller to the page on ride pages so Biketerra's own Zwift Ride
 // support can pair it; everywhere else the addon keeps it for D-pad navigation.
 function applyShare() {
-  terra.ble.setShared(!rideEnabled && mode === 'ride').catch((e) => note('share failed:', e.message || e));
+  const handToPage = !rideEnabled && mode === 'ride';
+  terra.ble.setShared(handToPage).catch((e) => note('share failed:', e.message || e));
+  if (mode !== 'ride' || (handToPage && devs.size > 0)) disconnectObcMock();
 }
+
+/* ---------- Virtual OpenBikeControl (OBC) shifter for native auto Virtual Shifting ---------- */
+const OBC_MOCK_ID = 'zwift-ride-obc-mock';
+const OBC_MOCK_NAME = 'Zwift Ride (OBC)';
+const OBC_SVC = 'd273f680-d548-419d-b9d1-fa0472345229';
+const OBC_BTN_CHR = 'd273f681-d548-419d-b9d1-fa0472345229';
+const OBC_HAP_CHR = 'd273f682-d548-419d-b9d1-fa0472345229';
+const OBC_APP_CHR = 'd273f683-d548-419d-b9d1-fa0472345229';
+const DIS_SVC = '0000180a-0000-1000-8000-00805f9b34fb';
+const DIS_MFR_CHR = '00002a29-0000-1000-8000-00805f9b34fb';
+const DIS_MODEL_CHR = '00002a24-0000-1000-8000-00805f9b34fb';
+
+const OBC_FULL_PROPS = {
+  broadcast: false, notify: false, indicate: false, read: false,
+  write: false, writeWithoutResponse: false,
+  authenticatedSignedWrites: false, reliableWrite: false, writableAuxiliaries: false,
+};
+const obcProps = (keys) => {
+  const p = { ...OBC_FULL_PROPS };
+  for (const k of keys) p[k] = true;
+  return p;
+};
+const obcU8 = (v) => ArrayBuffer.isView(v)
+  ? new Uint8Array(v.buffer, v.byteOffset, v.byteLength)
+  : v instanceof ArrayBuffer ? new Uint8Array(v) : Uint8Array.from(v || []);
+const obcDv = (a) => new DataView(a.buffer, a.byteOffset, a.byteLength);
+const obcNormUuid = (v) => {
+  const s = String(v == null ? '' : v).toLowerCase();
+  if (s === 'battery_service') return BAT_SVC;
+  if (s === 'device_information') return DIS_SVC;
+  if (/^[0-9a-f]{4}$/.test(s)) return '0000' + s + '-0000-1000-8000-00805f9b34fb';
+  return s;
+};
+const obcNotFound = (what) => typeof DOMException === 'function'
+  ? new DOMException(what + ' not found', 'NotFoundError')
+  : Object.assign(new Error(what + ' not found'), { name: 'NotFoundError' });
+
+class ObcMockCharacteristic extends EventTarget {
+  constructor(uuid, propertyKeys, initialBytes = null) {
+    super();
+    this.uuid = uuid;
+    this.properties = obcProps(propertyKeys);
+    this.value = initialBytes ? obcDv(obcU8(initialBytes)) : null;
+    this.service = null;
+    this._notifying = false;
+    this._writeHandler = null;
+  }
+  async readValue() {
+    if (!this.value) this.value = obcDv(new Uint8Array(0));
+    this.dispatchEvent(new Event('characteristicvaluechanged'));
+    return this.value;
+  }
+  async startNotifications() { this._notifying = true; return this; }
+  async stopNotifications() { this._notifying = false; return this; }
+  async writeValue(v) { return this.writeValueWithResponse(v); }
+  async writeValueWithResponse(v) { if (this._writeHandler) return this._writeHandler(obcU8(v)); }
+  async writeValueWithoutResponse(v) { if (this._writeHandler) return this._writeHandler(obcU8(v)); }
+  async getDescriptor() { throw obcNotFound('descriptor'); }
+  async getDescriptors() { return []; }
+  _notify(bytes) {
+    this.value = obcDv(obcU8(bytes));
+    if (!this._notifying) return;
+    this.dispatchEvent(new Event('characteristicvaluechanged'));
+  }
+}
+
+class ObcMockService {
+  constructor(device, uuid, chars) {
+    this.device = device;
+    this.uuid = uuid;
+    this.isPrimary = true;
+    this._chars = chars;
+    for (const c of chars) c.service = this;
+  }
+  async getCharacteristics(uuid) {
+    if (uuid === undefined) return this._chars;
+    const id = obcNormUuid(uuid);
+    const list = this._chars.filter((c) => obcNormUuid(c.uuid) === id);
+    if (!list.length) throw obcNotFound('characteristic ' + id);
+    return list;
+  }
+  async getCharacteristic(uuid) {
+    const id = obcNormUuid(uuid);
+    const hit = this._chars.find((c) => obcNormUuid(c.uuid) === id);
+    if (!hit) throw obcNotFound('characteristic ' + id);
+    return hit;
+  }
+}
+
+let obcDevice = null;
+let obcBtnChar = null;
+
+function buildObcMockDevice() {
+  const core = typeof window !== 'undefined' ? window.__terraCore : null;
+  const enc = new TextEncoder();
+
+  // Button State: [0x01, buttonId, state] — report Shift Up (0x01) & Shift Down (0x02) released
+  obcBtnChar = new ObcMockCharacteristic(OBC_BTN_CHR, ['read', 'notify'], new Uint8Array([0x01, 0x01, 0x00, 0x02, 0x00]));
+  const obcHapChar = new ObcMockCharacteristic(OBC_HAP_CHR, ['write', 'writeWithoutResponse']);
+  const obcAppChar = new ObcMockCharacteristic(OBC_APP_CHR, ['write', 'writeWithoutResponse']);
+  let loggedApp = false;
+  obcAppChar._writeHandler = (b) => {
+    if (loggedApp) return;
+    loggedApp = true;
+    const txt = [...b].map((c) => (c >= 32 && c < 127 ? String.fromCharCode(c) : ' ')).join('').trim();
+    note('OBC app connected' + (txt ? ': ' + txt : ''));
+  };
+
+  const batChar = new ObcMockCharacteristic(BAT_CHR, ['read', 'notify'], new Uint8Array([100]));
+  const mfrChar = new ObcMockCharacteristic(DIS_MFR_CHR, ['read'], enc.encode('Terra'));
+  const modelChar = new ObcMockCharacteristic(DIS_MODEL_CHR, ['read'], enc.encode(OBC_MOCK_NAME));
+
+  const dev = Object.assign(new EventTarget(), {
+    id: OBC_MOCK_ID,
+    name: OBC_MOCK_NAME,
+    watchingAdvertisements: false,
+    async watchAdvertisements() { this.watchingAdvertisements = true; return this; },
+    async forget() {
+      this.gatt.disconnect();
+      core?.devices?.delete(this.id);
+      return this;
+    },
+  });
+
+  const obcSvc = new ObcMockService(dev, OBC_SVC, [obcBtnChar, obcHapChar, obcAppChar]);
+  const batSvc = new ObcMockService(dev, BAT_SVC, [batChar]);
+  const disSvc = new ObcMockService(dev, DIS_SVC, [mfrChar, modelChar]);
+  const services = [obcSvc, batSvc, disSvc];
+
+  dev.gatt = {
+    device: dev,
+    connected: false,
+    connect: async () => {
+      loggedApp = false;
+      dev.gatt.connected = true;
+      try { core?.bus?.emit('ble:connected', { deviceId: dev.id, name: dev.name }); } catch {}
+      return dev.gatt;
+    },
+    disconnect: () => {
+      if (!dev.gatt.connected) return;
+      dev.gatt.connected = false;
+      try { core?.bus?.emit('ble:disconnected', { deviceId: dev.id, name: dev.name }); } catch {}
+      dev.dispatchEvent(new Event('gattserverdisconnected'));
+    },
+    getPrimaryServices: async (uuid) => {
+      if (!dev.gatt.connected) throw new DOMException('GATT server not connected', 'NetworkError');
+      if (uuid === undefined) return services;
+      const id = obcNormUuid(uuid);
+      const list = services.filter((s) => obcNormUuid(s.uuid) === id);
+      if (!list.length) throw obcNotFound('service ' + id);
+      return list;
+    },
+    getPrimaryService: async (uuid) => {
+      if (!dev.gatt.connected) throw new DOMException('GATT server not connected', 'NetworkError');
+      const id = obcNormUuid(uuid);
+      const hit = services.find((s) => obcNormUuid(s.uuid) === id);
+      if (!hit) throw obcNotFound('service ' + id);
+      return hit;
+    },
+  };
+
+  return dev;
+}
+
+function sendObcButton(buttonId, down) {
+  if (!obcBtnChar || !obcDevice || !obcDevice.gatt.connected) return;
+  obcBtnChar._notify(new Uint8Array([0x01, buttonId & 0xff, down ? 0x01 : 0x00]));
+}
+
+function disconnectObcMock() {
+  const core = typeof window !== 'undefined' ? window.__terraCore : null;
+  if (obcDevice) {
+    try { obcDevice.gatt.disconnect(); } catch {}
+  }
+  try { core?.devices?.delete(OBC_MOCK_ID); } catch {}
+}
+
+function isObcRequest(options) {
+  const filters = (options && options.filters) || [];
+  for (const f of filters) {
+    if (f && f.services && f.services.some((s) => obcNormUuid(s) === OBC_SVC)) return true;
+  }
+  const opt = (options && options.optionalServices) || [];
+  return opt.some((s) => obcNormUuid(s) === OBC_SVC);
+}
+
+function isObcExcluded(options) {
+  const ex = (options && options.exclusionFilters) || [];
+  return ex.some((f) => f && f.name === OBC_MOCK_NAME);
+}
+
+function hasWifiTrainer() {
+  const core = typeof window !== 'undefined' ? window.__terraCore : null;
+  if (core && core.devices && core.devices.has('wifi-trainer-bridge')) return true;
+  return [...document.querySelectorAll('.device-list .device-name')].some((el) => /kickr/i.test(el.textContent || ''));
+}
+
+function shouldMockObc() {
+  if (!autoVirtualShift || mode !== 'ride') return false;
+  if (typeof window !== 'undefined' && window.__terraMode === 'row') return false;
+  if (!rideEnabled && devs.size > 0) return false; // Biketerra pairs the real Zwift Ride directly
+  return devs.size > 0 || hasWifiTrainer();
+}
+
+function serveObcMock(settledCb) {
+  const core = typeof window !== 'undefined' ? window.__terraCore : null;
+  if (!obcDevice) obcDevice = buildObcMockDevice();
+  try { core?.devices?.set(obcDevice.id, obcDevice); } catch {}
+  if (obcDevice.gatt) obcDevice.gatt.connected = true; // connect immediately, matching wifi-trainer-bridge
+  try { window.__terraLastPaired = obcDevice.id; } catch {}
+  try { if (settledCb) settledCb(true); } catch {}
+  try { core?.bus?.emit('ble:paired', { deviceId: obcDevice.id, name: obcDevice.name }); } catch {}
+  note('paired virtual OpenBikeControl shifter:', obcDevice.name);
+  return obcDevice;
+}
+
+function maybePairObcMock() {
+  if (!shouldMockObc()) return;
+  if (obcDevice && obcDevice.gatt.connected) return;
+  if (typeof window !== 'undefined' && typeof window.__terraSettled === 'function') return;
+  let btn = null;
+  for (const el of document.querySelectorAll('button, [role="button"], a, div, span')) {
+    const t = (el.innerText || '').trim().toLowerCase();
+    if (!t.startsWith('pair device') || t.length > 40) continue;
+    if (!btn || btn.contains(el)) btn = el;
+  }
+  btn = btn && (btn.closest('button, [role="button"], a') || btn);
+  if (!btn) return;
+  const r = btn.getBoundingClientRect();
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  const target = (r.width && r.height && document.elementFromPoint(x, y)) || btn;
+  for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+    const ptr = t.startsWith('pointer');
+    target.dispatchEvent(new (ptr ? PointerEvent : MouseEvent)(t, {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: x, clientY: y, button: 0, buttons: t.endsWith('down') ? 1 : 0, detail: 1,
+      ...(ptr ? { pointerId: 1, pointerType: 'mouse', isPrimary: true } : {}),
+    }));
+  }
+}
+
+(function installObcHook() {
+  if (typeof navigator === 'undefined' || !navigator.bluetooth || typeof navigator.bluetooth.requestDevice !== 'function') return;
+  const origRequestDevice = navigator.bluetooth.requestDevice;
+  const wrappedRequestDevice = async function (options = {}) {
+    if (options && options.__terraOwner) return origRequestDevice.call(this, options);
+
+    if (isObcRequest(options) && !isObcExcluded(options) && shouldMockObc()) {
+      const settled = typeof window !== 'undefined' && typeof window.__terraSettled === 'function'
+        ? window.__terraSettled : null;
+      return serveObcMock(settled);
+    }
+
+    return origRequestDevice.call(this, options);
+  };
+  navigator.bluetooth.requestDevice = wrappedRequestDevice;
+  terra.onCleanup(() => {
+    if (navigator.bluetooth && navigator.bluetooth.requestDevice === wrappedRequestDevice) {
+      navigator.bluetooth.requestDevice = origRequestDevice;
+    }
+    disconnectObcMock();
+  });
+})();

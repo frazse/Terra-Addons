@@ -2,6 +2,7 @@
 cfg = await loadCfg();
 rideEnabled = await terra.storage.get('rideEnabled', true);
 consoleUiEnabled = await terra.storage.get('consoleUiEnabled', true);
+autoVirtualShift = await terra.storage.get('autoVirtualShift', true);
 buildPanel();
 applyShare();
 startAutoSelect();
