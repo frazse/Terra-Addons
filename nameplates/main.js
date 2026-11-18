@@ -341,17 +341,18 @@ function waitForBT(ms = 20000) {
 }
 
 /* ── context awareness: attack / sprint detector ──────────────────────────────
- * Per rider, sampled ~4 Hz from the live sim (power -> W/kg, cadence, position -> speed)
+ * Per rider, sampled ~4 Hz from the live sim (power -> W/kg, cadence, speed)
  * and kept as exponential moving averages: FAST (~1.5 s) vs SLOW (surgeWindow, ~20 s).
- *   kick     = fast W/kg well above slow (ratio + absolute floor), or a cadence jump
+ *   kick     = fast W/kg well above slow (ratio + absolute floor), boosted by cadence jump
  *   confirm  = kick sustained for `surgeHold` seconds            (idle -> kick -> on)
- *   end      = power falls >20 % off the effort's peak, or slow baseline catches up
- * Then, at frame time, the score is scaled by how much the rider stands out from the
- * visible group (W/kg lift vs the group's median lift, or gaining speed on the group),
- * so "everybody lifted the pace" doesn't read as an attack. */
+ *   hold     = while 'on' at real attack power, sW adapts at 0.35x so sustained efforts stay visible
+ *   end      = power falls >18 % off peak, back near baseline, or back to pack pace
+ * At frame time, score combines self-kick with strict group-outlier signals (holding very
+ * high W/kg well above pack median or closing much faster while pedaling), so steady
+ * breakaways and riders flying past from behind light up without flagging normal pack riders. */
 const hist = new Map();
-const SAMPLE_DT = 0.25, FAST_TAU = 1.5, SPEED_TAU = 2.0, INST_TAU = 0.6, WARM = 8;
-let crowded = false, crowdLevel = 0, lastSweep = 0;
+const SAMPLE_DT = 0.25, FAST_TAU = 1.5, SPEED_TAU = 2.0, INST_TAU = 0.6, WARM = 5, OUTLIER_WARM = 2.5;
+let crowded = false, crowdLevel = 0, lastSweep = 0, lastFrameT = 0, lastMedW = NaN;
 const finite = v => v != null && Number.isFinite(+v);
 const ramp = (x, lo, hi) => (x <= lo ? 0 : x >= hi ? 1 : (x - lo) / (hi - lo));
 const median = arr => {
@@ -364,11 +365,12 @@ const ema = (cur, x, a) => (Number.isFinite(x) ? (Number.isFinite(cur) ? cur + (
 
 // 0..1 raw "kick" strength from the rider's own history
 function kickOf(h, k) {
-  if (!(h.fW >= 2) || !(h.fW - h.sW >= 0.5 / k)) return 0;              // absolute floor: not just 40 -> 90 W
-  let s = ramp(h.fW / Math.max(h.sW, 1), 1 + 0.25 / k, 1 + 0.8 / k);    // fast/slow power ratio
-  if (Number.isFinite(h.fC) && Number.isFinite(h.sC))
-    s = Math.max(s, 0.7 * ramp(h.fC - h.sC, 8 / k, 20 / k));            // cadence jump (rpm)
-return s;
+  if (!(h.fW >= 2.5) || !(h.fW - h.sW >= 0.8 / k)) return 0;            // absolute floor: ignore minor draft adjustments
+  let s = ramp(h.fW / Math.max(h.sW, 1), 1 + 0.30 / k, 1 + 0.85 / k);   // fast/slow power ratio
+  if (s > 0.2 && Number.isFinite(h.fC) && Number.isFinite(h.sC) && h.sC >= 40) {
+    s = Math.max(s, Math.min(1, s + 0.30 * ramp(h.fC - h.sC, 12 / k, 28 / k))); // cadence jump reinforces a real power lift
+  }
+  return s;
 }
 
 function sampleRider(id, r, getSt, now, P) {
@@ -385,10 +387,11 @@ function sampleRider(id, r, getSt, now, P) {
   const st = getSt();
   const pos = sim.midPosition;
   const firstSample = h.px == null;
-  let spd = NaN;
-  if (!firstSample && dt > 0 && dt < 2) {
+  const kphBt = btSpeedKph(r);
+  let spd = kphBt != null ? kphBt / 3.6 : (st && finite(st.speed) ? +st.speed : NaN);
+  if (!Number.isFinite(spd) && !firstSample && dt > 0 && dt < 2) {
     const v = Math.hypot(pos.x - h.px, pos.z - h.pz) / dt;
-    if (v < 40) spd = v;                                   // ignore teleports / respawns
+    if (v < 40) spd = v;                                   // fallback: ignore teleports / respawns
   }
   h.px = pos.x; h.pz = pos.z; h.pt = now;
 
@@ -399,7 +402,9 @@ function sampleRider(id, r, getSt, now, P) {
 
   const dtc = firstSample ? 0 : Math.min(dt, 2);
   const aF = 1 - Math.exp(-dtc / FAST_TAU), aS = 1 - Math.exp(-dtc / P.slowTau), aV = 1 - Math.exp(-dtc / SPEED_TAU), aI = 1 - Math.exp(-dtc / INST_TAU);
-  h.fW = ema(h.fW, w, aF);   h.sW = ema(h.sW, w, aS);   h.vW = ema(h.vW, w, aI);   // vW ~ instantaneous
+  h.fW = ema(h.fW, w, aF);   h.vW = ema(h.vW, w, aI);   // vW ~ instantaneous
+  const holdSlow = h.st === 'on' && Number.isFinite(w) && Number.isFinite(h.sW) && w > h.sW && h.fW >= 3.5;
+  h.sW = ema(h.sW, w, holdSlow ? aS * 0.35 : aS);
   h.fC = ema(h.fC, cad, aF); h.sC = ema(h.sC, cad, aS);
   h.fS = ema(h.fS, spd, aV);
 
@@ -415,20 +420,34 @@ function sampleRider(id, r, getSt, now, P) {
     else if (now - h.kickT >= P.hold) h.st = 'on';                        // sustained => real effort
   } else {                                                               // 'on'
     h.peak = Math.max(h.peak, h.fW);
-    if (h.fW < Math.max(2, 0.8 * h.peak) || h.fW < h.sW * 1.05) h.st = 'idle';
+    const settledToPack = Number.isFinite(lastMedW) && h.fW < lastMedW + 0.4 && h.fW < h.sW * 1.25;
+    if (h.fW < Math.max(2.5, 0.82 * h.peak) || h.fW < h.sW * 1.12 || settledToPack) h.st = 'idle';
   }
 }
 
-// 0..1 final score at frame time: state x "stands out from the visible group"
-function scoreOf(h, medDW, medS, nGroup) {
-  if (!h || h.st === 'idle') return 0;
-  const base = h.st === 'on' ? 1 : 0.4;                                   // 'kick' = tentative
-  let rel = 1;
-  if (nGroup >= 3 && medDW != null) {
-    rel = ramp((h.fW - h.sW) - medDW, 0.15, 0.5);                         // lifted more than the group did
-    if (medS != null && Number.isFinite(h.fS)) rel = Math.max(rel, ramp((h.fS - medS) * 3.6, 0.3, 2));  // or is gaining on it
+// 0..1 final score at frame time: self-kick OR clear outlier effort vs visible group
+function scoreOf(h, medW, medDW, medS, nGroup, k, now) {
+  if (!h) return 0;
+  let selfScore = 0;
+  if (h.st !== 'idle') {
+    const base = h.st === 'on' ? 1 : 0.4;                                 // 'kick' = tentative
+    let rel = 1;
+    if (nGroup >= 3 && medDW != null) {
+      rel = ramp((h.fW - h.sW) - medDW, 0.25, 0.7);                       // lifted well above what the group lifted
+      if (medS != null && Number.isFinite(h.fS)) rel = Math.max(rel, ramp((h.fS - medS) * 3.6, 2.5, 6.0));
+    }
+    selfScore = base * (0.25 + 0.75 * rel);
   }
-  return base * (0.4 + 0.6 * rel);
+  let outlierScore = 0;
+  if (nGroup >= 4 && (now - h.first) >= OUTLIER_WARM) {
+    if (medW != null && Number.isFinite(h.fW) && h.fW >= 4.5) {
+      outlierScore = Math.max(outlierScore, ramp(h.fW - medW, 2.2 / k, 4.0 / k));
+    }
+    if (medS != null && Number.isFinite(h.fS) && Number.isFinite(h.fW) && h.fW >= 3.0) {
+      outlierScore = Math.max(outlierScore, 0.9 * ramp((h.fS - medS) * 3.6, 6.0 / k, 12.0 / k));
+    }
+  }
+  return Math.min(1, Math.max(selfScore, outlierScore));
 }
 
 /* ── render loop (installed via addFeature) ───────────────────────────────── */
@@ -466,6 +485,8 @@ function makeFeature(app) {
 
       /* ── context awareness: sample everyone's recent power/speed ───────── */
       const tNow = performance.now() / 1000;
+      const frameDt = lastFrameT > 0 ? Math.min(0.1, Math.max(0, tNow - lastFrameT)) : 0.016;
+      lastFrameT = tNow;
       const ctx  = !!S.contextAware;
       if (ctx) {
         const P = { k: clamp(S.surgeSensitivity, 0.25, 4), hold: clamp(S.surgeHold, 1, 15), slowTau: clamp(S.surgeWindow, 5, 120) };
@@ -577,26 +598,34 @@ entries.push({ el, sx, sy, sc, w, footY, id, focal: isFocal });
         const thr = Math.max(1, Math.round(num(S.crowdThreshold, 5)));
         const n = entries.length;
         if (n > thr) crowded = true; else if (n < thr) crowded = false;   // n == thr keeps the previous state
-        crowdLevel += ((ctx && crowded ? 1 : 0) - crowdLevel) * 0.08;
+        const aCrowd = 1 - Math.exp(-frameDt / 0.20);
+        crowdLevel += ((ctx && crowded ? 1 : 0) - crowdLevel) * aCrowd;
         if (crowdLevel < 0.002) crowdLevel = 0; else if (crowdLevel > 0.998) crowdLevel = 1;
         const dim = clamp(S.dimOpacity, 5, 100) / 100;
-        let medDW = null, medS = null, nGroup = 0;
+        const k = clamp(S.surgeSensitivity, 0.25, 4);
+        let medW = null, medDW = null, medS = null, nGroup = 0;
         if (ctx && crowdLevel > 0) {                 // what the visible group as a whole is doing
-          const dws = [], sps = [];
+          const ws = [], dws = [], sps = [];
           for (const e of entries) {
             const h = hist.get(e.id);
-            if (!h || tNow - h.first < WARM || !Number.isFinite(h.sW)) continue;
-            dws.push(h.fW - h.sW);
+            if (!h || tNow - h.first < OUTLIER_WARM) continue;
+            if (Number.isFinite(h.fW)) ws.push(h.fW);
             if (Number.isFinite(h.fS)) sps.push(h.fS);
+            if (tNow - h.first >= WARM && Number.isFinite(h.sW)) dws.push(h.fW - h.sW);
           }
-          nGroup = dws.length;
-          medDW = median(dws); medS = median(sps);
+          nGroup = ws.length;
+          medW = median(ws); medDW = median(dws); medS = median(sps);
+          lastMedW = medW != null ? medW : NaN;
+        } else {
+          lastMedW = NaN;
         }
+        const aAtk = 1 - Math.exp(-frameDt / 0.05);
+        const aRel = 1 - Math.exp(-frameDt / 0.55);
         for (const e of entries) {
           const el = e.el;
-          const target = (ctx && crowdLevel > 0) ? scoreOf(hist.get(e.id), medDW, medS, nGroup) : 0;
+          const target = (ctx && crowdLevel > 0) ? scoreOf(hist.get(e.id), medW, medDW, medS, nGroup, k, tNow) : 0;
           const cur = el._npSurge || 0;
-          el._npSurge = cur + (target - cur) * (target > cur ? 0.3 : 0.03);   // fast attack, slow release
+          el._npSurge = cur + (target - cur) * (target > cur ? aAtk : aRel);   // fast attack, slow release
           const calm = dim + (1 - dim) * el._npSurge;
           el._npOpV = e.focal ? 1 : 1 + crowdLevel * (calm - 1);
           const ops = el._npOpV >= 0.995 ? '' : el._npOpV.toFixed(2);
