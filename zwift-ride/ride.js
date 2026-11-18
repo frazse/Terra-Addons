@@ -142,21 +142,29 @@ async function readBattery(dev, server) {
   try {
     const batSvc = await server.getPrimaryService(BAT_SVC);
     const batChr = await batSvc.getCharacteristic(BAT_CHR);
-    const dv = await batChr.readValue();
-    if (dv && dv.byteLength >= 1) {
-      dev.battery = dv.getUint8(0);
-      note('battery', (dev.device.name || 'controller') + ':', dev.battery + '%');
+    const applyBat = (dv) => {
+      if (!dv || dv.byteLength < 1) return false;
+      const pct = dv.getUint8(0);
+      if (dev.battery === pct) return false;
+      dev.battery = pct;
       updateStatus();
+      return true;
+    };
+    const dv = await batChr.readValue();
+    if (applyBat(dv)) {
+      note('battery', (dev.device.name || 'controller') + ':', dev.battery + '%');
     }
     if (batChr.properties && batChr.properties.notify) {
       batChr.addEventListener('characteristicvaluechanged', (e) => {
-        const v = e.target && e.target.value;
-        if (v && v.byteLength >= 1) {
-          dev.battery = v.getUint8(0);
-          updateStatus();
-        }
+        applyBat(e.target && e.target.value);
       });
       await batChr.startNotifications();
+    } else {
+      const poll = setInterval(async () => {
+        if (!dev.up || stopped) { clearInterval(poll); return; }
+        try { applyBat(await batChr.readValue()); } catch {}
+      }, 120000);
+      terra.onCleanup(() => clearInterval(poll));
     }
   } catch {
     // Battery service is optional on some firmware / adapters
@@ -189,6 +197,7 @@ async function attach(dev) {
   note('connected', dev.device.name || dev.device.id);
   updateStatus();
   readBattery(dev, server);
+  if (mode === 'ride' && (!obcDevice || !obcDevice.gatt.connected)) maybePairObcMock();
 }
 
 // Retry until the controller is reachable (it may be switched off or asleep for a while).
@@ -227,7 +236,7 @@ function register(device) {
 function applyShare() {
   const handToPage = !rideEnabled && mode === 'ride';
   terra.ble.setShared(handToPage).catch((e) => note('share failed:', e.message || e));
-  if (mode !== 'ride' || (handToPage && devs.size > 0)) disconnectObcMock();
+  if (mode !== 'ride' || !rideEnabled) disconnectObcMock();
 }
 
 /* ---------- Virtual OpenBikeControl (OBC) shifter for native auto Virtual Shifting ---------- */
@@ -320,6 +329,25 @@ class ObcMockService {
 
 let obcDevice = null;
 let obcBtnChar = null;
+let obcBatChar = null;
+let obcLastBattery = null;
+
+function mirroredBatteryPct() {
+  const bats = [...devs]
+    .filter((d) => d.up && typeof d.battery === 'number' && !Number.isNaN(d.battery))
+    .map((d) => Math.max(0, Math.min(100, Math.round(d.battery))));
+  return bats.length ? Math.min(...bats) : 100;
+}
+
+function syncObcBattery(force = false) {
+  const pct = mirroredBatteryPct();
+  if (!obcBatChar) return;
+  if (!force && obcLastBattery === pct && obcBatChar.value && obcBatChar.value.byteLength >= 1 && obcBatChar.value.getUint8(0) === pct) {
+    return;
+  }
+  obcLastBattery = pct;
+  obcBatChar._notify(new Uint8Array([pct]));
+}
 
 function buildObcMockDevice() {
   const core = typeof window !== 'undefined' ? window.__terraCore : null;
@@ -337,7 +365,8 @@ function buildObcMockDevice() {
     note('OBC app connected' + (txt ? ': ' + txt : ''));
   };
 
-  const batChar = new ObcMockCharacteristic(BAT_CHR, ['read', 'notify'], new Uint8Array([100]));
+  obcLastBattery = mirroredBatteryPct();
+  obcBatChar = new ObcMockCharacteristic(BAT_CHR, ['read', 'notify'], new Uint8Array([obcLastBattery]));
   const mfrChar = new ObcMockCharacteristic(DIS_MFR_CHR, ['read'], enc.encode('Terra'));
   const modelChar = new ObcMockCharacteristic(DIS_MODEL_CHR, ['read'], enc.encode(OBC_MOCK_NAME));
 
@@ -354,7 +383,7 @@ function buildObcMockDevice() {
   });
 
   const obcSvc = new ObcMockService(dev, OBC_SVC, [obcBtnChar, obcHapChar, obcAppChar]);
-  const batSvc = new ObcMockService(dev, BAT_SVC, [batChar]);
+  const batSvc = new ObcMockService(dev, BAT_SVC, [obcBatChar]);
   const disSvc = new ObcMockService(dev, DIS_SVC, [mfrChar, modelChar]);
   const services = [obcSvc, batSvc, disSvc];
 
@@ -364,6 +393,7 @@ function buildObcMockDevice() {
     connect: async () => {
       loggedApp = false;
       dev.gatt.connected = true;
+      syncObcBattery(true);
       try { core?.bus?.emit('ble:connected', { deviceId: dev.id, name: dev.name }); } catch {}
       return dev.gatt;
     },
@@ -420,17 +450,10 @@ function isObcExcluded(options) {
   return ex.some((f) => f && f.name === OBC_MOCK_NAME);
 }
 
-function hasWifiTrainer() {
-  const core = typeof window !== 'undefined' ? window.__terraCore : null;
-  if (core && core.devices && core.devices.has('wifi-trainer-bridge')) return true;
-  return [...document.querySelectorAll('.device-list .device-name')].some((el) => /kickr/i.test(el.textContent || ''));
-}
-
 function shouldMockObc() {
-  if (!autoVirtualShift || mode !== 'ride') return false;
+  if (!autoVirtualShift || mode !== 'ride' || !rideEnabled) return false;
   if (typeof window !== 'undefined' && window.__terraMode === 'row') return false;
-  if (!rideEnabled && devs.size > 0) return false; // Biketerra pairs the real Zwift Ride directly
-  return devs.size > 0 || hasWifiTrainer();
+  return count() > 0;
 }
 
 function serveObcMock(settledCb) {

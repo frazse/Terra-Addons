@@ -38,6 +38,7 @@ function connectedBatteries() {
 }
 
 function updateStatus() {
+  if (typeof syncObcBattery === 'function') syncObcBattery();
   const n = count(), waiting = devs.size - n;
   const bats = connectedBatteries();
   try {
@@ -410,7 +411,7 @@ function buildPanel() {
     h('label', { class: 'btz-toggle' }, consoleUiToggle, ' Enable Console UI (widescreen layout & bottom HUD)'),
     h('p', {}, 'Turn off on mobile devices or smaller screens to keep Biketerra\'s default layout and hide the bottom controller bar.'),
     h('label', { class: 'btz-toggle' }, virtualShiftToggle, ' Virtual OpenBikeControl shifter (auto Virtual Shifting)'),
-    h('p', {}, 'Auto-pairs a virtual OpenBikeControl controller on ride start when a Zwift Ride controller or KICKR Wi-Fi is present, so Biketerra switches to Virtual Shifting on its own.'),
+    h('p', {}, 'Auto-pairs a virtual OpenBikeControl controller on ride pages when 1 or 2 Zwift Ride controllers are connected, so Biketerra switches to Virtual Shifting on its own.'),
     h('h4', {}, 'Binding profile'),
     h('div', { class: 'btz-profile-row' },
       profileSel,
