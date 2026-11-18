@@ -1,9 +1,11 @@
 #terra-fps-stats {
-position: fixed; z-index: 1; display: flex; gap: 14px; align-items: baseline;
+position: fixed; z-index: 1; display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap;
 top: 10px; left: 10px; padding: 6px 12px; border-radius: 10px;
-user-select: none; pointer-events: none;
+user-select: none; pointer-events: none; transition: left .15s ease;
 background: rgba(15, 17, 21, .72); color: #fff; font: 600 15px system-ui, sans-serif;
 backdrop-filter: blur(6px);
 }
+#terra-fps-stats > span { display: inline-flex; align-items: baseline; white-space: nowrap; }
 #terra-fps-stats small { font-weight: 400; opacity: .6; margin-left: 3px; }
+#terra-fps-stats small.sub { font-size: 11px; opacity: .5; margin-left: 4px; }
 #terra-fps-stats .v { font-size: 20px; font-variant-numeric: tabular-nums; }

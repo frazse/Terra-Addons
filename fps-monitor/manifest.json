@@ -1,9 +1,48 @@
 {
   "id": "fps-monitor",
   "name": "FPS Monitor",
-  "version": "0.1.0",
-  "description": "Small draggable FPS overlay.",
+  "version": "0.2.0",
+  "category": "HUD",
+  "description": "Compact performance overlay for FPS, frame time, 1% lows, hitches, JS memory, and render resolution.",
   "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
   "js": ["main.js"],
-  "css": ["style.css"]
+  "css": ["style.css"],
+  "settings": [
+    {
+      "key": "show_frame_time",
+      "label": "Show frame time (ms)",
+      "type": "checkbox",
+      "default": false,
+      "description": "Shows average frame time and worst spike (max ms) over the last second."
+    },
+    {
+      "key": "show_low_1pct",
+      "label": "Show 1% low FPS",
+      "type": "checkbox",
+      "default": false,
+      "description": "Shows the 1% low FPS over a rolling 10-second window to highlight micro-stutters."
+    },
+    {
+      "key": "show_stalls",
+      "label": "Show frame hitches (50ms+)",
+      "type": "checkbox",
+      "default": false,
+      "description": "Counts frames taking 50ms or longer in the last 10 seconds (plus JS long tasks when supported)."
+    },
+    {
+      "key": "show_memory",
+      "label": "Show JS heap memory (MB)",
+      "type": "checkbox",
+      "default": false,
+      "description": "Shows live JS heap usage on Chromium/Electron (hidden automatically if unavailable)."
+    },
+    {
+      "key": "show_resolution",
+      "label": "Show canvas resolution",
+      "type": "checkbox",
+      "default": false,
+      "description": "Shows the active 3D canvas pixel dimensions (width x height)."
+    }
+  ],
+  "enabled": true
 }
