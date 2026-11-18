@@ -1,0 +1,66 @@
+{
+  "id": "climb-profile",
+  "name": "Karoo Climber",
+  "version": "1.0.0",
+  "category": "HUD",
+  "description": "Hammerhead Karoo OS CLIMBER HUD for Biketerra. Detects climbs from ego.sim.prevPathNode, zooms Biketerra's on-screen elevation SVG viewBox onto the active climb (+/- padding), and renders a smooth 500m fixed-segment Karoo ticker.",
+  "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
+  "js": ["main.js"],
+  "settings": [
+    {
+      "key": "sensitivity",
+      "label": "Climb detection sensitivity",
+      "type": "select",
+      "default": "all",
+      "options": ["all", "medium", "large"],
+      "description": "Karoo thresholds: all (>=400m, 3%), medium (Medium & Large), large (Large Only)."
+    },
+    {
+      "key": "approach_m",
+      "label": "Approach pop-up distance (m)",
+      "type": "select",
+      "default": "250",
+      "options": ["150", "250", "500", "1000"],
+      "description": "Distance before a climb base where CLIMBER opens and zooms."
+    },
+    {
+      "key": "zoom_elevation_svg",
+      "label": "Zoom on-screen elevation graph",
+      "type": "checkbox",
+      "default": true,
+      "description": "Adjust Biketerra's elevation SVG viewBox to zoom onto the current climb and restore it afterward."
+    },
+    {
+      "key": "zoom_pad_m",
+      "label": "Zoom padding before/after climb (m)",
+      "type": "select",
+      "default": "250",
+      "options": ["100", "250", "500", "1000"],
+      "description": "Extra metres shown before the climb base and after the summit when zoomed."
+    },
+    {
+      "key": "flat_mode",
+      "label": "Flat-road display",
+      "type": "select",
+      "default": "compact",
+      "options": ["compact", "expanded", "hidden"],
+      "description": "When not near or on a climb: show a compact pill, keep full drawer open, or auto-hide."
+    },
+    {
+      "key": "units",
+      "label": "Units",
+      "type": "select",
+      "default": "metric",
+      "options": ["metric", "imperial"],
+      "description": "Metric (m/km, 100m blocks) or Imperial (yd/mi, 100yd blocks)."
+    },
+    {
+      "key": "opacity",
+      "label": "Background opacity (%)",
+      "type": "number",
+      "default": 88,
+      "description": "30 – 100"
+    }
+  ],
+  "enabled": true
+}
