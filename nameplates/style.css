@@ -58,29 +58,6 @@
   transform: none;
 }
 
-/* ⚙ settings shortcut — ride pages have no header, so a small floating button.
- *  z-index sits just under the nameplate overlay and far below the Terra modal. */
-.np-chip {
-  position: fixed;
-  right: 14px;
-  bottom: 14px;
-  z-index: 2147483644;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border: 1px solid #3a3a44;
-  border-radius: 50%;
-  background: rgba(21, 21, 26, 0.88);
-  color: #c9c9d1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-  /* NOTE: no backdrop-filter here — it breaks the game's GPU on the Vulkan ANGLE stack */
-}
-.np-chip:hover { color: #ffffff; border-color: #55555f; }
-
 /* leader lines (plate -> rider) for plates that were moved aside; sits under the plates */
 .np-lines {
   position: absolute;
@@ -104,4 +81,12 @@
 /* surging rider in a crowd: full opacity (set at runtime) + a ring so it reads as "attack/sprint" */
 .np-hot {
   box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.95), 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+/* drafting-range rider (<= 12 m): subtle teal ring */
+.np-draft {
+  box-shadow: 0 0 0 2px rgba(45, 212, 191, 0.9), 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+.np-hot.np-draft {
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.95), 0 0 0 4px rgba(45, 212, 191, 0.75);
 }

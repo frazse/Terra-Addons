@@ -1,9 +1,11 @@
 // ===== Zwift Ride controller addon for Terra =====
 // Ported from the "Biketerra Ride Controller" Chrome extension. The hub window, background script and
 // message bridge are gone: Rust holds the BLE link, this addon decodes it and drives the page directly.
-// The js files are concatenated into one scope, in manifest order: config, nav, ride, panel, main.
+// The js files are concatenated into one scope, in manifest order: config, nav, camera, ride, panel, console-ui, main.
 
 const SVC = '0000fc82-0000-1000-8000-00805f9b34fb';
+const BAT_SVC = '0000180f-0000-1000-8000-00805f9b34fb';
+const BAT_CHR = '00002a19-0000-1000-8000-00805f9b34fb';
 const ANALOG_ON = 30, ANALOG_OFF = 15; // lever thresholds (hysteresis), applied per direction
 const RIDE_PATH_PREFIX = '/ride';
 const SPECTATE_PATH_PREFIX = '/spectate';
@@ -31,13 +33,15 @@ const ACTION_LIST = [
   ['none', '\u2014'], ['nav_up', 'Navigate up'], ['nav_down', 'Navigate down'],
   ['nav_left', 'Navigate left'], ['nav_right', 'Navigate right'], ['select', 'Select / click'],
   ['back', 'Back'], ['page_up', 'Page up'], ['page_down', 'Page down'], ['top', 'Scroll to top'],
+  ['open_terra', 'Open Terra settings'], ['cycle_profile', 'Cycle Ride profile'],
 ];
 const KEY = (code, key) => ({ code, key });
 const W = KEY('KeyW', 'w'), S = KEY('KeyS', 's');
 const UP = KEY('ArrowUp', 'ArrowUp'), DOWN = KEY('ArrowDown', 'ArrowDown');
 const LEFT = KEY('ArrowLeft', 'ArrowLeft'), RIGHT = KEY('ArrowRight', 'ArrowRight');
+
 const DEF = {
-  // Follows Biketerra's default Zwift Ride bindings (key values from its Keyboard tab).
+  // User default Zwift Ride bindings + LB camera modifier layer.
   ride: {
     shift_up_l: [S], shift_dn_l: [S], shift_up_r: [W], shift_dn_r: [W], // LS1+LS2 = shift down, RS1+RS2 = shift up
     up: [UP], down: [DOWN], left: [LEFT], right: [RIGHT],
@@ -56,15 +60,12 @@ const clone = (o) => JSON.parse(JSON.stringify(o));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const dlog = (...a) => { if (DEBUG) terra.log(...a); };
 
-// cfg = { ride: {input: [{code,key}]}, browse: {input: action},
-//         mods: {powerup_l: bool, ...},                      which Ride On buttons act as modifiers
-//         layers: {powerup_l: {ride: {...}, browse: {...}}}  mappings used while that modifier is held }
 let cfg = null;
-let rideEnabled = true; // send ride keys on /ride* pages (off = let Biketerra handle the controller)
+let rideEnabled = true;
 let stopped = false;
+let activeProfile = 'default';
+let customProfiles = {};
 
-// Ride On buttons can act as modifiers: hold one, press another button, and that button's mapping comes from
-// the modifier's layer (anything the layer leaves unset falls back to the normal mapping).
 const MOD_CAPABLE = ['powerup_l', 'powerup_r'];
 const MOD_SHORT = { powerup_l: 'LB', powerup_r: 'RB' };
 DEF.mods = { powerup_l: true, powerup_r: false };
@@ -77,25 +78,72 @@ DEF.layers = {
       up: [KEY('Cam:zoom_in', 'cam')],
       y: [KEY('Cam:tilt_up', 'cam')],
       z: [KEY('Cam:orbit_left', 'cam')],
+      onoff_l: [KEY('Cmd:open_terra', 'cmd')],
     },
-    browse: {},
+    browse: {
+      onoff_l: 'open_terra',
+      onoff_r: 'cycle_profile',
+    },
   },
   powerup_r: { ride: {}, browse: {} },
 };
+
+const PRESETS = {
+  default: {
+    label: 'Default (Free Ride + LB Cam)',
+    cfg: () => clone(DEF),
+  },
+  erg: {
+    label: 'ERG / Workout',
+    cfg: () => ({
+      ride: {
+        shift_up_l: [DOWN], shift_dn_l: [DOWN],
+        shift_up_r: [UP], shift_dn_r: [UP],
+        up: [UP], down: [DOWN], left: [LEFT], right: [RIGHT],
+        lever_l_pos: [LEFT], lever_l_neg: [LEFT], lever_r_pos: [RIGHT], lever_r_neg: [RIGHT],
+        a: [KEY('Space', ' ')], b: [KEY('KeyB', 'b')], y: [KEY('KeyP', 'p')], z: [KEY('KeyC', 'c')],
+        onoff_r: [KEY('KeyU', 'u')],
+      },
+      browse: clone(DEF.browse),
+      mods: { powerup_l: true, powerup_r: false },
+      layers: clone(DEF.layers),
+    }),
+  },
+  spectate: {
+    label: 'Spectate / Camera',
+    cfg: () => ({
+      ride: {
+        left: [KEY('Cam:orbit_left', 'cam')],
+        right: [KEY('Cam:orbit_right', 'cam')],
+        up: [KEY('Cam:tilt_up', 'cam')],
+        down: [KEY('Cam:tilt_down', 'cam')],
+        shift_up_r: [KEY('Cam:zoom_in', 'cam')],
+        shift_dn_r: [KEY('Cam:zoom_in', 'cam')],
+        shift_up_l: [KEY('Cam:zoom_out', 'cam')],
+        shift_dn_l: [KEY('Cam:zoom_out', 'cam')],
+        a: [KEY('Enter', 'Enter')],
+        b: [KEY('KeyC', 'c')],
+        y: [KEY('KeyP', 'p')],
+        z: [KEY('KeyU', 'u')],
+      },
+      browse: clone(DEF.browse),
+      mods: { powerup_l: false, powerup_r: false },
+      layers: { powerup_l: { ride: {}, browse: {} }, powerup_r: { ride: {}, browse: {} } },
+    }),
+  },
+};
+
 const defaultCfg = () => clone(DEF);
 
-let layer = 'normal'; // which layer the settings table is showing: 'normal' or a modifier's input name
-const rideMap = (l) => (l === 'normal' ? cfg.ride : cfg.layers[l].ride);
-const browseMap = (l) => (l === 'normal' ? cfg.browse : cfg.layers[l].browse);
-
-async function loadCfg() {
-  const saved = await terra.storage.get('config', {});
-  const ride = { ...clone(DEF.ride), ...(saved.ride || {}) };
-  for (const k of Object.keys(ride)) ride[k] = (ride[k] || []).slice(0, 1); // one key per input
+function normalizeCfg(raw) {
+  const base = clone(DEF);
+  const src = raw || {};
+  const ride = { ...clone(base.ride), ...(src.ride || {}) };
+  for (const k of Object.keys(ride)) ride[k] = (ride[k] || []).slice(0, 1);
   const layers = {};
   for (const m of MOD_CAPABLE) {
-    const d = DEF.layers[m] || { ride: {}, browse: {} };
-    const s = saved.layers && saved.layers[m];
+    const d = base.layers[m] || { ride: {}, browse: {} };
+    const s = src.layers && src.layers[m];
     layers[m] = {
       ride: { ...clone(s ? (s.ride || {}) : (d.ride || {})) },
       browse: { ...clone(s ? (s.browse || {}) : (d.browse || {})) },
@@ -104,10 +152,21 @@ async function loadCfg() {
   }
   return {
     ride,
-    browse: { ...clone(DEF.browse), ...(saved.browse || {}) },
-    mods: { ...clone(DEF.mods), ...(saved.mods || {}) },
+    browse: { ...clone(base.browse), ...(src.browse || {}) },
+    mods: { ...clone(base.mods), ...(src.mods || {}) },
     layers,
   };
+}
+
+let layer = 'normal';
+const rideMap = (l) => (l === 'normal' ? cfg.ride : cfg.layers[l].ride);
+const browseMap = (l) => (l === 'normal' ? cfg.browse : cfg.layers[l].browse);
+
+async function loadCfg() {
+  activeProfile = await terra.storage.get('activeProfile', 'default');
+  customProfiles = await terra.storage.get('customProfiles', {});
+  const saved = await terra.storage.get('config', {});
+  return normalizeCfg(saved);
 }
 function saveCfg() {
   terra.storage.set('config', cfg).then(() => flash('Saved'), (e) => flash('Save failed: ' + e));

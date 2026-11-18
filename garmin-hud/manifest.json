@@ -1,7 +1,8 @@
 {
   "id": "garmin-hud",
   "name": "Garmin HUD",
-  "version": "1.3.0",
+  "version": "1.4.0",
+  "category": "HUD",
   "description": "Replaces standard stat cells with Garmin-style rolling graphs colored by live Biketerra zones. Values prefer btApp.riderController (focal/ego) at ~10Hz, falling back to biketerra-ride and then DOM scraping.",
   "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
   "js": ["main.js"],
@@ -32,6 +33,37 @@
       "type": "number",
       "default": 173,
       "description": "Used until Intervals.icu responds."
+    },
+    {
+      "key": "speed_unit",
+      "label": "Speed unit",
+      "type": "select",
+      "default": "km/h",
+      "options": ["km/h", "mph"],
+      "description": "Display unit for the speed cell and graph."
+    },
+    {
+      "key": "power_smoothing",
+      "label": "Power numeric smoothing",
+      "type": "select",
+      "default": "instant",
+      "options": ["instant", "3s", "10s"],
+      "description": "Smooths the power number readout (rolling graph stays instant 10Hz)."
+    },
+    {
+      "key": "window_seconds",
+      "label": "Graph window (seconds)",
+      "type": "select",
+      "default": "60",
+      "options": ["30", "60", "120"],
+      "description": "Time span visible on the rolling graphs."
+    },
+    {
+      "key": "bg_opacity",
+      "label": "Graph background opacity (%)",
+      "type": "number",
+      "default": 45,
+      "description": "0 (fully transparent) – 100 (solid)."
     }
   ],
   "enabled": true

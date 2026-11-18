@@ -1,8 +1,9 @@
 {
   "id": "rider-speed",
   "name": "Rider Speed",
-  "version": "0.1.0",
-  "description": "Shows each rider's live speed next to the W/kg value in the rider list, from the biketerra ride broadcast (~2Hz).",
+  "version": "0.2.0",
+  "category": "HUD",
+  "description": "Shows each rider's live speed (plus optional speed delta and W/kg trend arrow) in the rider list, driven by btApp.riderController (~5Hz) with biketerra-ride fallback.",
   "matches": [
     "https://biketerra.com/ride*",
     "https://biketerra.com/spectate/*"
@@ -13,9 +14,24 @@
     {
       "key": "speed_unit",
       "label": "Speed unit",
-      "type": "text",
+      "type": "select",
       "default": "km/h",
-      "description": "km/h or mph. (The biketerra broadcast sends m/s.)"
+      "options": ["km/h", "mph"],
+      "description": "Display unit for rider speeds."
+    },
+    {
+      "key": "show_delta",
+      "label": "Show speed delta vs you",
+      "type": "checkbox",
+      "default": false,
+      "description": "Shows +/- speed difference relative to the focal rider."
+    },
+    {
+      "key": "show_trend",
+      "label": "Show W/kg trend arrow",
+      "type": "checkbox",
+      "default": false,
+      "description": "Shows an up/down arrow when a rider's effort surges or eases."
     }
   ],
   "enabled": true

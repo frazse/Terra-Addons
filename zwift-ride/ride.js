@@ -138,6 +138,31 @@ function releaseDevice(dev) {
   dev.prev = null;
 }
 
+async function readBattery(dev, server) {
+  try {
+    const batSvc = await server.getPrimaryService(BAT_SVC);
+    const batChr = await batSvc.getCharacteristic(BAT_CHR);
+    const dv = await batChr.readValue();
+    if (dv && dv.byteLength >= 1) {
+      dev.battery = dv.getUint8(0);
+      note('battery', (dev.device.name || 'controller') + ':', dev.battery + '%');
+      updateStatus();
+    }
+    if (batChr.properties && batChr.properties.notify) {
+      batChr.addEventListener('characteristicvaluechanged', (e) => {
+        const v = e.target && e.target.value;
+        if (v && v.byteLength >= 1) {
+          dev.battery = v.getUint8(0);
+          updateStatus();
+        }
+      });
+      await batChr.startNotifications();
+    }
+  } catch {
+    // Battery service is optional on some firmware / adapters
+  }
+}
+
 /* ---------- BLE (through Terra's Web Bluetooth shim) ---------- */
 async function attach(dev) {
   const server = await dev.device.gatt.connect();
@@ -163,6 +188,7 @@ async function attach(dev) {
   dev.up = true;
   note('connected', dev.device.name || dev.device.id);
   updateStatus();
+  readBattery(dev, server);
 }
 
 // Retry until the controller is reachable (it may be switched off or asleep for a while).
@@ -183,10 +209,11 @@ async function keepAlive(dev) {
 
 function register(device) {
   if ([...devs].some((d) => d.device.id === device.id)) return null;
-  const dev = { device, prev: null, active: new Set(), up: false, n: devs.size + 1 };
+  const dev = { device, prev: null, active: new Set(), up: false, battery: null, n: devs.size + 1 };
   devs.add(dev);
   device.addEventListener('gattserverdisconnected', () => {
     dev.up = false;
+    dev.battery = null;
     releaseDevice(dev);
     note('disconnected', device.name || device.id);
     updateStatus();

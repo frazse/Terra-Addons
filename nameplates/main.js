@@ -76,7 +76,8 @@ const DEFAULTS = {
   nameFormat: 'full', showEgo: true, fontSize: 12,
   colorMode: 'custom', plateColor: '#0f172a', egoPlateColor: '#dc2626',
   showPower: true, showWkg: true,
-  showSpeed: false, showCadence: false, showHeart: false, showGap: false, showLap: false,
+  showSpeed: false, showCadence: false, showHeart: false, showGap: false,
+  showDistance: false, highlightDraft: false, showLap: false,
   plateHeight: 1.9, maxDist: 100, bgOpacity: 82,
   avoidOverlap: true, overlapGap: 2, spreadSideways: true, leaderLines: true,
   contextAware: true, crowdThreshold: 5, dimOpacity: 45, surgeWindow: 20, surgeHold: 3, surgeSensitivity: 1,
@@ -106,18 +107,6 @@ const fetchSettings = (then) => terra.settings.all().then(then).catch(e => log('
 try {
   terra.settings.onChange(() => { fetchSettings(applyS); }); // re-read: the UI emit is synchronous, our read isn't
 } catch (e) { /* older Terra core */ }
-
-/* ── ⚙ chip — ride pages usually have no header, so put a small button here ── */
-const chip = document.createElement('button');
-chip.type = 'button';
-chip.className = 'np-chip';
-chip.title = 'Nameplates settings';
-chip.innerHTML =
-'<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" ' +
-'stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle>' +
-'<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09a1.65 1.65 0 0 0-1.15-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>';
-chip.addEventListener('click', () => { try { terra.settings.open(); } catch (e) {} });
-document.body.appendChild(chip);
 
 /* ── live stats cache (2 Hz broadcast) ─────────────────────────────────────── */
 const statsById   = new Map(); // String(id) -> stats from frame.riders
@@ -244,48 +233,82 @@ const rgbCss  = rgb => 'rgba(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ',' + (c
 const textFor = rgb => ((0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255 > 0.58) ? '#0f172a' : '#ffffff';
 
 /* ── label ─────────────────────────────────────────────────────────────────── */
-function labelText(name, st, r) {
+const avail = (v) => v != null && v !== '' && Number.isFinite(+v);
+function btNum(r, keys) {
+  if (!r || typeof r !== 'object') return null;
+  const srcs = [r.sim, r, r.userData, r.stats, r.state, r.telemetry];
+  for (const s of srcs) {
+    if (!s || typeof s !== 'object') continue;
+    for (const k of keys) {
+      if (avail(s[k])) return +s[k];
+    }
+  }
+  return null;
+}
+function btSpeedKph(r) {
+  if (!r || typeof r !== 'object') return null;
+  const kph = btNum(r, ['speedKph', 'speedKmh', 'speed_kmh', 'kph']);
+  if (kph != null) return kph;
+  const ms = btNum(r, ['speed', 'speedMs', 'vel']);
+  if (ms != null) return ms * 3.6;
+  const v = r.sim && r.sim.velocity;
+  if (v != null) {
+    if (typeof v === 'number' && Number.isFinite(v)) return v * 3.6;
+    if (typeof v === 'object' && avail(v.x) && avail(v.z)) {
+      return Math.hypot(+v.x, avail(v.y) ? +v.y : 0, +v.z) * 3.6;
+    }
+  }
+  return null;
+}
+
+function labelText(name, st, r, distM) {
   const parts = [];
-  const sim = (r && r.sim) || {};
-  // A stat is "available" when it is present and finite — deliberately
-  // INCLUDING 0 (stopped at the lights: 0 W / 0 rpm should still show).
-  // Stats that are unreported (absent / not a number) stay hidden.
-  const avail = (v) => v != null && Number.isFinite(+v);
-  const pwr = avail(sim.power) ? +sim.power
-  : (st && avail(st.power) ? +st.power : null);
+  const pwrBt = btNum(r, ['power', 'watts', 'wattage']);
+  const pwr = pwrBt != null ? pwrBt : (st && avail(st.power) ? +st.power : null);
   if (S.showPower && pwr != null) parts.push(fmtInt(pwr) + ' W');
   if (S.showWkg && pwr != null) {
     const massG = (r && r.config && r.config.mass) || (r && r.userData && r.userData.weight) || 75000;
     const w = (st && avail(st.wkg)) ? +st.wkg : (pwr * 1000) / massG;
     parts.push('(' + fmt1(w) + ' W/kg)');
   }
-  if (st) {
-    if (S.showSpeed && avail(st.speed)) parts.push(fmt1(st.speed * 3.6) + ' km/h');
-    if (S.showCadence && avail(st.cadence))   parts.push(fmtInt(st.cadence)   + ' rpm');
-    if (S.showHeart   && avail(st.heartRate)) parts.push(fmtInt(st.heartRate) + ' bpm');
-    if (S.showGap     && avail(st.gap))       parts.push('+' + fmt1(st.gap) + ' s');
-    if (S.showLap     && avail(st.lapCount))  parts.push('Lap ' + fmtInt(st.lapCount));
+  if (S.showSpeed) {
+    const kph = btSpeedKph(r);
+    const spd = kph != null ? kph : (st && avail(st.speed) ? +st.speed * 3.6 : null);
+    if (spd != null) parts.push(fmt1(spd) + ' km/h');
   }
+  if (S.showCadence) {
+    const cad = btNum(r, ['cadence', 'cad', 'rpm', 'cadenceRpm']);
+    const cVal = cad != null ? cad : (st && avail(st.cadence) ? +st.cadence : null);
+    if (cVal != null) parts.push(fmtInt(cVal) + ' rpm');
+  }
+  if (S.showHeart) {
+    const hr = btNum(r, ['heartRate', 'hr', 'heart_rate', 'bpm']);
+    const hVal = hr != null ? hr : (st && avail(st.heartRate) ? +st.heartRate : null);
+    if (hVal != null) parts.push(fmtInt(hVal) + ' bpm');
+  }
+  if (st && S.showGap && avail(st.gap)) parts.push('+' + fmt1(st.gap) + ' s');
+  if (S.showDistance && distM != null && Number.isFinite(distM)) parts.push(fmtInt(distM) + ' m');
+  if (st && S.showLap && avail(st.lapCount)) parts.push('Lap ' + fmtInt(st.lapCount));
   if (!name) return parts.join('  •  ');   // name format "none": stats only (empty if none enabled)
-return parts.length ? name + '  •  ' + parts.join('  •  ') : name;
+  return parts.length ? name + '  •  ' + parts.join('  •  ') : name;
 }
 
 /* ── live preview in the cog menu ──────────────────────────────────────────── */
-const SAMPLE = { power: 210, wkg: 2.8, speed: 37.4, cadence: 88, heartRate: 152, gap: 12.4, lapCount: 8 };
+const SAMPLE = { power: 210, wkg: 2.8, speed: 10.4, cadence: 88, heartRate: 152, gap: 12.4, lapCount: 8 };
 function paintPreview(slot) {
   if (!slot) { log('preview: hidden (slot=null)'); return; } // nothing to tear down (static sample, no timers)
-const mk = (name, rgb) => {
+const mk = (name, rgb, distM) => {
   const el = document.createElement('div');
   el.className = 'np np-sample';
   el.style.background = rgbCss(rgb);
   el.style.color = textFor(rgb);
   el.style.fontSize = px(S.fontSize);
-  el.textContent = labelText(name, SAMPLE, null);
+  el.textContent = labelText(name, SAMPLE, null, distM);
   return el;
 };
 // helmet colors can't be sampled out of the game; preview with the custom colors
 const paintNow = () => {
-  slot.replaceChildren(mk('Josef Nilsson', customRgb(true)), mk('Alex Kim', customRgb(false)));
+  slot.replaceChildren(mk('Josef Nilsson', customRgb(true), null), mk('Alex Kim', customRgb(false), 8));
 };
 paintNow();
 log('preview painted: ' + slot.children.length + ' sample(s)');
@@ -470,12 +493,14 @@ function makeFeature(app) {
         if (isFocal && hideFocal) continue;           // first-person: focal isn't on screen
         if (isFocal && !showEgo) continue;            // plate hidden by settings
 
-        /* ── range gate: skip non-focal riders farther than maxD from focal ── */
-        if (!isFocal && maxD > 0 && focalPos) {
+        /* ── range gate & distance to focal ── */
+        let distM = null;
+        if (!isFocal && focalPos) {
           const dx = sim.midPosition.x - focalPos.x;
           const dy = sim.midPosition.y - focalPos.y;
           const dz = sim.midPosition.z - focalPos.z;
-          if (Math.sqrt(dx*dx + dy*dy + dz*dz) > maxD) {
+          distM = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          if (maxD > 0 && distM > maxD) {
             const id0 = (sim.id != null) ? sim.id : sim.athleteId;
             const el0 = plates.get(id0);
             if (el0) el0.style.display = 'none';
@@ -501,7 +526,7 @@ function makeFeature(app) {
 
         /* ── label ────────────────────────────────────────────────────── */
         const st = statsFor(id, isFocal, focalIsEgo, r);
-        const text = labelText(nameFor(r, isFocal, id), st, r);
+        const text = labelText(nameFor(r, isFocal, id), st, r, distM);
         if (!el) {                  // lazy-create (also survives a page navigation)
           el = document.createElement('div');
           el.className = 'np' + (isFocal ? ' np-focal' : '');
@@ -512,6 +537,9 @@ function makeFeature(app) {
         }
         if (el.textContent !== text) { el.textContent = text; el._npSize = null; }
         if (!text) { el.style.display = 'none'; continue; }   // nothing to show (no name, no stats)
+
+        const inDraft = !!S.highlightDraft && !isFocal && distM != null && distM > 0.3 && distM <= 12;
+        if (el._npDraft !== inDraft) { el.classList.toggle('np-draft', inDraft); el._npDraft = inDraft; }
 
 /* ── colors (per mode; re-applied only when they change) ────────── */
 const rgb = resolveRgb(id, isFocal, r);
@@ -710,7 +738,6 @@ function cleanup() {
   lastActive.clear();
   statsById.clear();
   if (ov.parentNode) ov.remove();
-  if (chip.parentNode) chip.remove();
   for (const k of ['__nameplates']) { try { delete window[k]; } catch (e) {} }
   log('nameplates cleaned up');
 }
@@ -726,7 +753,7 @@ try {
   '  Terra ships an auto-breakpoint for exactly this; set TERRA_NO_BT_BREAKPOINT=1\n' +
   '  to disable it, or pause manually and set `window.btApp = this`.');
   log('  original error: ' + err.message);
-  return;   // leave the (invisible) overlay + ⚙ chip in place for later re-injection
+  return;   // leave the (invisible) overlay in place for later re-injection
 }
 
 cleanRef = appRef.addFeature((scope, env) => makeFeature(appRef));

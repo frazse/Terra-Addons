@@ -4,6 +4,10 @@
   let INTERVALS_FTP = null;
   let INTERVALS_LTHR = null;
   let intervalsId = '';
+  let speedUnit = 'km/h';
+  let powerSmoothing = 'instant';
+  let WINDOW_MS = 60000;
+  let bgOpacity = 45;
 
   function getActiveFTP() {
     return window.location.pathname.includes('/spectate') ? FALLBACK_FTP : (INTERVALS_FTP || FALLBACK_FTP);
@@ -106,6 +110,28 @@
     FALLBACK_FTP = n(s.fallback_ftp, 310);
     FALLBACK_LTHR = n(s.fallback_lthr, 173);
     intervalsId = String(s.intervals_id || '').trim();
+    speedUnit = String(s.speed_unit || 'km/h').trim().toLowerCase() === 'mph' ? 'mph' : 'km/h';
+    const ps = String(s.power_smoothing || 'instant').trim().toLowerCase();
+    powerSmoothing = (ps === '3s' || ps === '10s') ? ps : 'instant';
+    const ws = Number(s.window_seconds);
+    WINDOW_MS = ((ws === 30 || ws === 60 || ws === 120) ? ws : 60) * 1000;
+    const rawOp = s.bg_opacity === undefined || s.bg_opacity === '' ? 45 : Number(s.bg_opacity);
+    bgOpacity = Number.isFinite(rawOp) ? Math.min(100, Math.max(0, rawOp)) : 45;
+  }
+
+  async function loadCachedZones() {
+    if (typeof terra === 'undefined' || !terra.storage) return;
+    if (window.location.pathname.includes('/spectate')) return;
+    try {
+      const cached = await terra.storage.get('intervals_cache', null);
+      if (cached && (!intervalsId || cached.id === intervalsId)) {
+        if (Number.isFinite(cached.ftp) && cached.ftp > 0) INTERVALS_FTP = cached.ftp;
+        if (Number.isFinite(cached.lthr) && cached.lthr > 0) INTERVALS_LTHR = cached.lthr;
+        if (INTERVALS_FTP || INTERVALS_LTHR) {
+          terra.log(`[Garmin HUD] Loaded cached Intervals.icu zones: FTP ${INTERVALS_FTP} | LTHR ${INTERVALS_LTHR}`);
+        }
+      }
+    } catch {}
   }
 
   async function fetchAthleteZonesFromIntervals() {
@@ -123,7 +149,7 @@
       const r = await terra.http.request({
         method: 'GET',
         url: `https://intervals.icu/api/v1/athlete/${encodeURIComponent(intervalsId)}`,
-                                         basic: { user: 'API_KEY', password: '{{setting:intervals_api_key}}' }
+        basic: { user: 'API_KEY', password: '{{setting:intervals_api_key}}' }
       });
 
       if (r.status >= 200 && r.status < 300) {
@@ -144,6 +170,11 @@
 
         INTERVALS_FTP = apiFtp;
         INTERVALS_LTHR = apiLthr;
+        if (terra.storage && (apiFtp || apiLthr)) {
+          terra.storage.set('intervals_cache', {
+            id: intervalsId, ftp: apiFtp, lthr: apiLthr, updatedAt: Date.now()
+          }).catch(() => {});
+        }
 
         terra.log(`[Garmin HUD] Synced Intervals.icu zones: FTP ${INTERVALS_FTP} | LTHR ${INTERVALS_LTHR}`);
       } else {
@@ -154,14 +185,24 @@
     }
   }
 
-  const WINDOW_MS = 60000;   // 60s rolling window across all sample rates
   const BT_SAMPLE_MS = 100;  // 10Hz when btApp.riderController is active
   const DOM_SAMPLE_MS = 1000;
   const initNow = performance.now();
   const makeBaseline = (color) => [
-    { val: 0, color, t: initNow - WINDOW_MS },
+    { val: 0, color, t: initNow - 60000 },
     { val: 0, color, t: initNow },
   ];
+
+  const speedGraph = {
+    drawIcon: (ctx, x, y, size) => {
+      ctx.save(); ctx.translate(x, y - size / 2); ctx.scale(size / 24, size / 24);
+      ctx.strokeStyle = '#3B82F6'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.stroke(new Path2D('M2 17.5a10 10 0 1 1 20 0')); ctx.stroke(new Path2D('M12 17.5L15 10'));
+      ctx.fillStyle = '#3B82F6'; ctx.beginPath(); ctx.arc(12, 17.5, 1.5, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    },
+    data: makeBaseline('#22c55e'), minScale: 50, type: 'speed', allTimeSum: 0, allTimeCount: 0, allTimeMax: 0
+  };
 
   const graphs = {
     'W': {
@@ -193,16 +234,8 @@
       },
       data: makeBaseline('rgb(0,158,128)'), minScale: 190, type: 'hr', allTimeSum: 0, allTimeCount: 0, allTimeMax: 0
     },
-    'kph': {
-      drawIcon: (ctx, x, y, size) => {
-        ctx.save(); ctx.translate(x, y - size / 2); ctx.scale(size / 24, size / 24);
-        ctx.strokeStyle = '#3B82F6'; ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-        ctx.stroke(new Path2D('M2 17.5a10 10 0 1 1 20 0')); ctx.stroke(new Path2D('M12 17.5L15 10'));
-        ctx.fillStyle = '#3B82F6'; ctx.beginPath(); ctx.arc(12, 17.5, 1.5, 0, Math.PI * 2); ctx.fill();
-        ctx.restore();
-      },
-      data: makeBaseline('#22c55e'), minScale: 50,  type: 'speed', allTimeSum: 0, allTimeCount: 0, allTimeMax: 0
-    }
+    'kph': speedGraph,
+    'mph': speedGraph,
   };
 
   // ---- Live telemetry priority:
@@ -214,6 +247,7 @@
   let lastFeedAt = 0;
   let activeSource = null; // 'btApp' | 'ride' | 'dom'
   const FEED_FRESH_MS = 2500;
+  const powerSamples = []; // { val, t } for optional 3s/10s readout smoothing
 
   function finiteNum(v) {
     if (v === null || v === undefined || v === '') return null;
@@ -248,7 +282,7 @@
     if (unit === 'W')   return pickNum(srcs, ['power', 'watts', 'wattage']);
     if (unit === 'rpm') return pickNum(srcs, ['cadence', 'cad', 'rpm', 'cadenceRpm']);
     if (unit === 'bpm') return pickNum(srcs, ['heartRate', 'hr', 'heart_rate', 'bpm']);
-    if (unit === 'kph') {
+    if (unit === 'kph' || unit === 'mph') {
       const kph = pickNum(srcs, ['speedKph', 'speedKmh', 'speed_kmh', 'kph']);
       if (kph !== null) return kph;
       const ms = pickNum(srcs, ['speed', 'speedMs', 'vel']);
@@ -297,7 +331,7 @@
           if (name && r.name && String(r.name).trim().toLowerCase() === name) return r;
         }
       }
-      if (isSpectatingOther) return null; // never leak own frame.ego onto another rider
+      if (isSpectatingOther) return null;
     }
     return rideFrame.ego || null;
   }
@@ -308,7 +342,7 @@
     if (unit === 'W')   return pickNum(srcs, ['power', 'watts', 'wattage']);
     if (unit === 'rpm') return pickNum(srcs, ['cadence', 'cad', 'rpm', 'cadenceRpm']);
     if (unit === 'bpm') return pickNum(srcs, ['heartRate', 'hr', 'heart_rate', 'bpm']);
-    if (unit === 'kph') {
+    if (unit === 'kph' || unit === 'mph') {
       const kph = pickNum(srcs, ['speedKph', 'speedKmh', 'speed_kmh', 'kph']);
       if (kph !== null) return kph;
       const ms = pickNum(srcs, ['speed', 'speedMs', 'vel']);
@@ -317,7 +351,6 @@
     return null;
   }
 
-  // Frames older than FEED_FRESH_MS mean the biketerra-ride feed is quiet (or never started).
   const feedFresh = () => rideFrame !== null && (performance.now() - lastFeedAt) < FEED_FRESH_MS;
 
   function noteSource(src) {
@@ -359,21 +392,33 @@
   }
 
   function readMetric(unit, valueNode, rc, btRider, feedObj, isFeedFresh) {
-    if (btRider) {
-      const btVal = readBtMetric(btRider, unit);
-      if (btVal !== null) return btVal;
+    let v = null;
+    if (btRider) v = readBtMetric(btRider, unit);
+    if (v === null && isFeedFresh && feedObj) v = readFeedMetric(feedObj, unit);
+    if (v === null) {
+      const domVal = parseFloat(valueNode.innerText) || 0;
+      v = (unit === 'mph') ? domVal * 1.609344 : domVal; // normalize internal speed to km/h
     }
-    if (isFeedFresh && feedObj) {
-      const feedVal = readFeedMetric(feedObj, unit);
-      if (feedVal !== null) return feedVal;
+    if (unit === 'kph' || unit === 'mph') {
+      return speedUnit === 'mph' ? v * 0.62137119 : v;
     }
-    return parseFloat(valueNode.innerText) || 0;
+    return v;
+  }
+
+  function smoothedPower(instant, now) {
+    if (powerSmoothing === 'instant') return instant;
+    const span = powerSmoothing === '10s' ? 10000 : 3000;
+    let sum = 0, cnt = 0;
+    for (let i = powerSamples.length - 1; i >= 0; i--) {
+      if (now - powerSamples[i].t > span) break;
+      sum += powerSamples[i].val;
+      cnt++;
+    }
+    return cnt > 0 ? sum / cnt : instant;
   }
 
   let renderInterval = null;
 
-  // Sample every stat cell once: compute the live value, update the all-time stats, and
-  // push it into the 60s time-windowed rolling buffer.
   function sampleOnce(rc, btRider, feedObj, isFeedFresh, now) {
     const windowStart = now - WINDOW_MS;
     document.querySelectorAll('.stat-cell').forEach((cell) => {
@@ -381,11 +426,18 @@
       const unitNode = cell.querySelector('.stat-unit');
       if (!valueNode || !unitNode) return;
 
-      const unit = unitNode.innerText.trim();
-      const graphInfo = graphs[unit];
+      const unit = unitNode.innerText.trim().toLowerCase();
+      const graphInfo = graphs[unit === 'w' ? 'W' : unit];
       if (!graphInfo) return;
 
-      const val = readMetric(unit, valueNode, rc, btRider, feedObj, isFeedFresh);
+      const val = readMetric(unit === 'w' ? 'W' : unit, valueNode, rc, btRider, feedObj, isFeedFresh);
+
+      if (graphInfo.type === 'power') {
+        powerSamples.push({ val, t: now });
+        while (powerSamples.length > 0 && now - powerSamples[0].t > 12000) {
+          powerSamples.shift();
+        }
+      }
 
       if (val > 0) {
         graphInfo.allTimeSum += val;
@@ -402,12 +454,10 @@
     });
   }
 
-  // Redraw every stat-cell graph from the rolling buffer.
   function renderOnce(rc, btRider, feedObj, isFeedFresh, now) {
     const windowStart = now - WINDOW_MS;
     const statCells = document.querySelectorAll('.stat-cell');
 
-    // Measure a "normal" sized cell (like Heart Rate) to establish a global baseline
     let standardFontSize = 24;
     if (statCells.length > 1) {
       const normalValNode = statCells[1].querySelector('.stat-value');
@@ -421,18 +471,19 @@
       const unitNode = cell.querySelector('.stat-unit');
       if (!valueNode || !unitNode) return;
 
-      const unit = unitNode.innerText.trim();
-      const graphInfo = graphs[unit];
+      const rawUnit = unitNode.innerText.trim();
+      const unitKey = rawUnit.toLowerCase() === 'w' ? 'W' : rawUnit.toLowerCase();
+      const graphInfo = graphs[unitKey];
       if (!graphInfo) return;
 
-      const val = readMetric(unit, valueNode, rc, btRider, feedObj, isFeedFresh);
+      const val = readMetric(unitKey, valueNode, rc, btRider, feedObj, isFeedFresh);
+      const displayVal = graphInfo.type === 'power' ? smoothedPower(val, now) : val;
 
       const valueStyle = window.getComputedStyle(valueNode);
       const unitStyle = window.getComputedStyle(unitNode);
       const valueFontFamily = valueStyle.fontFamily;
       const unitFontFamily = unitStyle.fontFamily;
 
-      // Force all cells (including Power) to use the standard size
       const baseFontSize = standardFontSize;
       const cellHeight = baseFontSize * 3.2;
       const graphHeight = cellHeight * 0.45;
@@ -444,8 +495,14 @@
 
         canvas = document.createElement('canvas');
         canvas.className = 'terra-dark-graph';
-        canvas.style.cssText = 'position: absolute; top: 0; left: 0; z-index: 10; pointer-events: none; border-radius: 6px; overflow: hidden; background: #18181b;';
+        canvas.style.cssText = 'position: absolute; top: 0; left: 0; z-index: 10; pointer-events: none; border-radius: 6px; overflow: hidden;';
         cell.appendChild(canvas);
+      }
+      canvas.style.background = `rgba(24, 24, 27, ${(bgOpacity / 100).toFixed(2)})`;
+      for (const ch of cell.children) {
+        if (ch !== canvas && ch.style && ch.style.opacity !== '0') {
+          ch.style.opacity = '0';
+        }
       }
 
       cell.style.height = `${cellHeight}px`;
@@ -475,7 +532,8 @@
       for (const d of graphInfo.data) {
         if (d.t >= windowStart && d.val > windowMax) windowMax = d.val;
       }
-      const scaleMax = Math.max(graphInfo.minScale, windowMax);
+      const minScale = graphInfo.type === 'speed' ? (speedUnit === 'mph' ? 31 : 50) : graphInfo.minScale;
+      const scaleMax = Math.max(minScale, windowMax);
 
       const allTimeAvg = graphInfo.allTimeCount > 0 ? Math.round(graphInfo.allTimeSum / graphInfo.allTimeCount) : 0;
       const allTimeMax = Math.round(graphInfo.allTimeMax);
@@ -530,7 +588,8 @@
       const iconSize = baseFontSize * 0.95;
       graphInfo.drawIcon(ctx, paddingX, (height - graphHeight) / 2, iconSize);
 
-      const valStr = (unit === 'kph') ? val.toFixed(1) : Math.round(val).toString();
+      const isSpeed = graphInfo.type === 'speed';
+      const valStr = isSpeed ? displayVal.toFixed(1) : Math.round(displayVal).toString();
 
       ctx.font = `bold ${baseFontSize}px ${valueFontFamily}`;
       ctx.fillStyle = resolveValueColor(valueNode, valueStyle);
@@ -542,10 +601,11 @@
       ctx.textAlign = 'right';
       ctx.fillStyle = '#9ca3af';
       ctx.font = `bold ${baseFontSize * 0.6}px ${unitFontFamily}`;
-      ctx.fillText(`AVG ${allTimeAvg}`, width - paddingX, Math.floor((height - graphHeight) * 0.3));
+      const unitHint = isSpeed ? ` ${speedUnit}` : (graphInfo.type === 'power' && powerSmoothing !== 'instant' ? ` (${powerSmoothing})` : '');
+      ctx.fillText(`AVG ${allTimeAvg}${unitHint}`, width - paddingX, Math.floor((height - graphHeight) * 0.3));
       ctx.fillText(`MAX ${allTimeMax}`, width - paddingX, Math.floor((height - graphHeight) * 0.7));
 
-      ctx.strokeStyle = '#27272a';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(0, 0);
@@ -564,8 +624,6 @@
     renderOnce(rc, btRider, feedObj, isFeedFresh, now);
   }
 
-  // Primary loop (~10Hz when btApp.riderController is active; ~1Hz for DOM fallback).
-  // While btApp is absent and biketerra-ride frames are arriving, onRide drives ticks directly.
   let lastDomTickAt = 0;
   function startHudLoop() {
     renderInterval = setInterval(() => {
@@ -587,18 +645,32 @@
 
   (async () => {
     await loadSettings();
+    await loadCachedZones();
     await fetchAthleteZonesFromIntervals();
 
     if (typeof terra !== 'undefined' && terra.settings) {
       terra.settings.onChange(async () => {
+        const prevUnit = speedUnit;
         await loadSettings();
+        if (prevUnit !== speedUnit) {
+          // Reset speed buffer when switching km/h <-> mph so curve doesn't mix units
+          speedGraph.data = makeBaseline('#22c55e');
+          speedGraph.allTimeSum = 0;
+          speedGraph.allTimeCount = 0;
+          speedGraph.allTimeMax = 0;
+        }
         await fetchAthleteZonesFromIntervals();
       });
 
       terra.onCleanup(() => {
         if (renderInterval) clearInterval(renderInterval);
         if (offRide) offRide();
-        document.querySelectorAll('canvas.terra-dark-graph').forEach(c => c.remove());
+        document.querySelectorAll('.stat-cell').forEach((cell) => {
+          cell.querySelectorAll('canvas.terra-dark-graph').forEach((c) => c.remove());
+          for (const ch of cell.children) {
+            if (ch.style && ch.style.opacity === '0') ch.style.opacity = '';
+          }
+        });
       });
     }
 

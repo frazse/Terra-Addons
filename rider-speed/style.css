@@ -50,3 +50,15 @@
   opacity: 1;
   text-align: right;
 }
+.rider .tr-rider-speed .tr-delta {
+  font-size: 0.78em;
+  font-variant-numeric: tabular-nums;
+}
+.rider .tr-rider-speed .tr-delta.pos { color: #4ade80; }
+.rider .tr-rider-speed .tr-delta.neg { color: #f87171; }
+.rider .tr-rider-speed .tr-trend {
+  font-size: 0.72em;
+  vertical-align: middle;
+}
+.rider .tr-rider-speed .tr-trend.up { color: #4ade80; }
+.rider .tr-rider-speed .tr-trend.down { color: #fbbf24; }

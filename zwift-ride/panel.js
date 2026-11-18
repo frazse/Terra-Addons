@@ -10,7 +10,7 @@ function h(tag, props = {}, ...kids) {
   return e;
 }
 const logLines = [];
-let tabsEl, hintEl;
+let tabsEl, hintEl, profileSel;
 const modInputs = {};
 let panel, pill, pillDot, pillLabel, pillWrap, pillTimer, rideToggle, statusEl, lastEl, logEl, savedEl, fallbackEl;
 const rows = {};
@@ -29,18 +29,30 @@ function flash(t) {
   clearTimeout(flashTimer);
   flashTimer = setTimeout(() => { savedEl.textContent = ''; }, 1500);
 }
+
+function connectedBatteries() {
+  return [...devs].filter((d) => d.up && d.battery != null).map((d) => ({
+    name: d.device.name || ('Controller #' + d.n),
+    pct: d.battery,
+  }));
+}
+
 function updateStatus() {
   const n = count(), waiting = devs.size - n;
-  // Published for other addons (auto-trainer reads it as a bike/row signal: the controller
-  // being out means the bike setup is stowed, i.e. a rowing session).
+  const bats = connectedBatteries();
   try {
-    window.__zwiftRideState = { connected: n, waiting };
+    window.__zwiftRideState = { connected: n, waiting, batteries: bats };
     terra.bus.emit('zwift-ride:state', window.__zwiftRideState);
   } catch {}
   if (!pill) return;
-  statusEl.textContent = `${n} controller(s) connected` + (waiting ? `, ${waiting} waiting` : '');
+  const batText = bats.length ? ' (' + bats.map((b) => b.pct + '%').join(', ') + ')' : '';
+  const minBat = bats.length ? Math.min(...bats.map((b) => b.pct)) : null;
+  statusEl.textContent = `${n} controller(s) connected${batText}` + (waiting ? `, ${waiting} waiting` : '');
+  statusEl.classList.toggle('btz-bat-low', minBat !== null && minBat <= 20);
   pillDot.className = 'btz-dot ' + (n > 0 ? 'ok' : devs.size ? 'wait' : 'none');
-  pillLabel.textContent = n > 0 ? `Controller \u00b7 ${n}` : devs.size ? 'Controller: waiting' : 'Pair controller';
+  pillLabel.textContent = n > 0
+    ? `Controller \u00b7 ${n}` + (minBat !== null ? ` \u00b7 ${minBat}%` : '')
+    : devs.size ? 'Controller: waiting' : 'Pair controller';
   pill.title = `Zwift Ride: ${statusEl.textContent} \u00b7 ${mode} page` + (rideEnabled ? '' : ' \u00b7 ride keys off') + ' (click for settings)';
 }
 
@@ -50,10 +62,10 @@ function headerHost() {
   const first = link('Routes') || link('Dashboard'), last = link('Challenges');
   if (!first || !last) return null;
   let box = last.parentElement;
-  while (box && !box.contains(first)) box = box.parentElement; // nav list = common ancestor of both links
+  while (box && !box.contains(first)) box = box.parentElement;
   if (!box || box === document.body) return null;
   let item = last;
-  while (item.parentElement && item.parentElement !== box) item = item.parentElement; // child of the list holding the last link
+  while (item.parentElement && item.parentElement !== box) item = item.parentElement;
   return { box, item };
 }
 function placePill() {
@@ -73,9 +85,6 @@ function placePill() {
     pill.classList.remove('btz-in-header');
     if (pill.parentElement !== document.body) document.body.append(pill);
     if (pillWrap) pillWrap.remove();
-    // No header on ride/spectate pages: the floating pill would sit on top of
-    // Biketerra's stats, so hide it there (the panel stays reachable from any
-    // page that has the nav header, e.g. the dashboard).
     pill.style.display =
       mode === 'ride' || location.pathname.startsWith(SPECTATE_PATH_PREFIX) ? 'none' : '';
   }
@@ -90,9 +99,16 @@ function setRideEnabled(v) {
   updateStatus();
 }
 
+const CMD_ACTIONS = [
+  ['open_terra', 'Open Terra settings'],
+  ['cycle_profile', 'Cycle Ride profile'],
+];
+const CMD_LABEL = Object.fromEntries(CMD_ACTIONS);
 const ARROWS = { ArrowUp: '\u2191', ArrowDown: '\u2193', ArrowLeft: '\u2190', ArrowRight: '\u2192' };
+
 function keyLabel(k) {
   if (!k) return '\u2014';
+  if (k.code && k.code.startsWith('Cmd:')) return CMD_LABEL[k.code.slice(4)] || 'Command';
   if (k.code && k.code.startsWith('Cam:')) return CAM_LABEL[k.code.slice(4)] || 'Camera';
   if (ARROWS[k.code]) return ARROWS[k.code];
   if (k.key === ' ') return 'Space';
@@ -111,9 +127,80 @@ function refresh(name) {
   r.slot.textContent = arr && arr.length ? keyLabel(arr[0]) : inherit ? 'as normal' : '\u2014';
   r.slot.classList.toggle('btz-inherit', inherit && !(arr && arr.length));
   const a0 = arr && arr[0];
-  r.cam.value = a0 && a0.code.startsWith('Cam:') ? a0.code.slice(4) : '';
+  if (a0 && a0.code.startsWith('Cam:')) r.cam.value = a0.code;
+  else if (a0 && a0.code.startsWith('Cmd:')) r.cam.value = a0.code;
+  else r.cam.value = '';
   if (r.sel.dataset.layer !== layer) fillSelect(r.sel);
   r.sel.value = layer === 'normal' ? (b || 'none') : (b === undefined ? 'inherit' : b);
+}
+
+// ---- profiles ----
+function profileLabel(id) {
+  if (PRESETS[id]) return PRESETS[id].label;
+  if (id.startsWith('custom:')) return 'Custom: ' + id.slice(7);
+  return id;
+}
+
+function renderProfiles() {
+  if (!profileSel) return;
+  profileSel.replaceChildren();
+  for (const [id, p] of Object.entries(PRESETS)) {
+    profileSel.append(h('option', { value: id }, p.label));
+  }
+  for (const name of Object.keys(customProfiles || {})) {
+    profileSel.append(h('option', { value: 'custom:' + name }, 'Custom: ' + name));
+  }
+  if (![...profileSel.options].some((o) => o.value === activeProfile)) {
+    profileSel.append(h('option', { value: activeProfile }, profileLabel(activeProfile)));
+  }
+  profileSel.value = activeProfile;
+}
+
+function applyPresetById(id) {
+  let nextCfg = null;
+  if (PRESETS[id]) {
+    nextCfg = normalizeCfg(PRESETS[id].cfg());
+  } else if (id.startsWith('custom:') && customProfiles[id.slice(7)]) {
+    nextCfg = normalizeCfg(customProfiles[id.slice(7)]);
+  }
+  if (!nextCfg) return;
+  activeProfile = id;
+  cfg = nextCfg;
+  layer = 'normal';
+  releaseAll();
+  terra.storage.set('activeProfile', activeProfile).catch(() => {});
+  saveCfg();
+  for (const m of MOD_CAPABLE) {
+    if (modInputs[m]) modInputs[m].checked = !!cfg.mods[m];
+  }
+  INPUTS.forEach(([n]) => refresh(n));
+  renderTabs();
+  renderProfiles();
+  flash('Profile: ' + profileLabel(id));
+  note('profile switched to', profileLabel(id));
+}
+
+function cyclePreset() {
+  const keys = [
+    ...Object.keys(PRESETS),
+    ...Object.keys(customProfiles || {}).map((k) => 'custom:' + k),
+  ];
+  if (!keys.length) return;
+  const idx = keys.indexOf(activeProfile);
+  const next = keys[(idx + 1) % keys.length];
+  applyPresetById(next);
+}
+
+async function saveCustomPreset() {
+  const name = prompt('Save current bindings as a custom preset name:');
+  if (!name || !name.trim()) return;
+  const clean = name.trim().slice(0, 40);
+  customProfiles[clean] = clone(cfg);
+  activeProfile = 'custom:' + clean;
+  await terra.storage.set('customProfiles', customProfiles);
+  await terra.storage.set('activeProfile', activeProfile);
+  renderProfiles();
+  flash('Saved preset "' + clean + '"');
 }
 
 // ---- layers: tabs for "Normal" and each enabled modifier ----
@@ -132,7 +219,7 @@ function renderTabs() {
   tabsEl.style.display = enabled.length ? '' : 'none';
   for (const [n, label] of INPUTS) {
     const r = rows[n];
-    r.tr.style.display = n === layer ? 'none' : ''; // a modifier has no mapping inside its own layer
+    r.tr.style.display = n === layer ? 'none' : '';
     r.label.textContent = label + (layer === 'normal' && cfg.mods[n] ? ' \u00b7 tap' : '');
     refresh(n);
   }
@@ -152,7 +239,7 @@ let cancelCapture = null;
 function capture(name, btn) {
   if (cancelCapture) cancelCapture();
   let finished = false;
-  const l = layer; // the layer being edited when capture started
+  const l = layer;
   btn.textContent = 'press a key\u2026';
   const done = (k) => {
     if (finished) return;
@@ -162,9 +249,8 @@ function capture(name, btn) {
     cancelCapture = null;
     if (k) { rideMap(l)[name] = [k]; saveCfg(); }
     refresh(name);
-    btn.blur(); // so Space/Enter on the captured key can't re-trigger the button
+    btn.blur();
   };
-  // Only real keyboard presses: the controller's own synthetic keys must not be captured.
   const onKey = (e) => { if (!e.isTrusted) return; e.preventDefault(); e.stopPropagation(); done({ code: e.code, key: e.key }); };
   const onBlur = () => done(null);
   window.addEventListener('keydown', onKey, true);
@@ -189,13 +275,17 @@ function buildTable(tbody) {
       if (sel.value === 'inherit') delete m[name]; else m[name] = sel.value;
       saveCfg();
     });
-    const cam = h('select', { title: 'Camera action (instead of a key) on ride pages' });
-    cam.append(h('option', { value: '' }, '\u2014'), ...CAM_ACTIONS.map(([v, t]) => h('option', { value: v }, t)));
+    const cam = h('select', { title: 'Camera or Terra action (instead of a key) on ride pages' });
+    const camGroup = h('optgroup', { label: 'Camera' }, ...CAM_ACTIONS.map(([v, t]) => h('option', { value: 'Cam:' + v }, t)));
+    const cmdGroup = h('optgroup', { label: 'Terra' }, ...CMD_ACTIONS.map(([v, t]) => h('option', { value: 'Cmd:' + v }, t)));
+    cam.append(h('option', { value: '' }, '\u2014'), camGroup, cmdGroup);
     cam.addEventListener('change', () => {
-      if (cam.value) rideMap(layer)[name] = [{ code: 'Cam:' + cam.value, key: 'cam' }];
+      if (cam.value) rideMap(layer)[name] = [{ code: cam.value, key: cam.value.startsWith('Cmd:') ? 'cmd' : 'cam' }];
       else {
         const cur = (rideMap(layer)[name] || [])[0];
-        if (cur && cur.code.startsWith('Cam:')) { if (layer === 'normal') cfg.ride[name] = []; else delete rideMap(layer)[name]; }
+        if (cur && (cur.code.startsWith('Cam:') || cur.code.startsWith('Cmd:'))) {
+          if (layer === 'normal') cfg.ride[name] = []; else delete rideMap(layer)[name];
+        }
       }
       saveCfg();
       refresh(name);
@@ -248,7 +338,7 @@ async function pairController() {
   try {
     const device = await terra.ble.request({
       filters: [{ services: [SVC] }, { namePrefix: 'Zwift' }],
-      optionalServices: [SVC],
+      optionalServices: [SVC, BAT_SVC],
     });
     note('chosen:', device.name || device.id);
     const dev = register(device);
@@ -274,14 +364,24 @@ function buildPanel() {
   rideToggle.checked = rideEnabled;
   rideToggle.addEventListener('change', () => setRideEnabled(rideToggle.checked));
 
+  profileSel = h('select', { title: 'Binding profile preset' });
+  profileSel.addEventListener('change', () => applyPresetById(profileSel.value));
+  renderProfiles();
+
   panel = h('div', { id: 'btz-panel' },
     h('button', { class: 'btz-close', title: 'close', onclick: () => togglePanel(false) }, '\u00d7'),
     h('h3', {}, 'Zwift Ride controller'),
     h('p', {}, 'Terra holds the Bluetooth connection, so page loads on the site no longer drop your controller.'),
-    h('button', { class: 'btz-primary', onclick: pairController }, 'Pair controller'),
+    h('div', { style: 'display:flex;gap:8px;flex-wrap:wrap;align-items:center;' },
+      h('button', { class: 'btz-primary', onclick: pairController }, 'Pair controller'),
+      h('button', { class: 'btz-secondary', onclick: () => terra.bus.emit('terra:open-addons', {}) }, 'Terra settings')),
     statusEl, fallbackEl,
     h('label', { class: 'btz-toggle' }, rideToggle, ' Send ride keys on ride pages'),
     h('p', {}, 'Turn off to let Biketerra handle the controller itself during rides. Navigation on other pages keeps working.'),
+    h('h4', {}, 'Binding profile'),
+    h('div', { class: 'btz-profile-row' },
+      profileSel,
+      h('button', { class: 'btz-secondary', type: 'button', onclick: saveCustomPreset }, 'Save as preset\u2026')),
     h('h4', {}, 'Modifier buttons'),
     ...MOD_CAPABLE.map(modBox),
     h('p', {}, 'A modifier does nothing by itself while held. Press another button meanwhile to use that button\'s mapping from the modifier\'s tab below; a quick tap on its own runs its normal mapping.'),
@@ -289,16 +389,8 @@ function buildPanel() {
     h('h4', {}, 'Button mapping ', savedEl),
     h('p', {}, 'Click a key slot, then press the key to send during a ride. The row lights up while you press the matching button or move a lever. Changes save automatically.'),
     tabsEl, hintEl,
-    h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Input'), h('th', {}, 'Ride key'), h('th', {}, 'Camera'), h('th', {}, 'On site pages'))), tbody),
-    h('p', {}, h('button', { class: 'btz-secondary', title: 'Makes LB a modifier: LB + D-pad orbits/tilts, LB + shifters zoom', onclick: () => applyCameraPreset('powerup_l') }, 'Camera preset on LB'), ' ', h('button', { class: 'btz-secondary', onclick: () => {
-      cfg = defaultCfg();
-      layer = 'normal';
-      releaseAll();
-      saveCfg();
-      for (const m of MOD_CAPABLE) modInputs[m].checked = !!cfg.mods[m];
-      INPUTS.forEach(([n]) => refresh(n));
-      renderTabs();
-    } }, 'Reset to defaults')),
+    h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Input'), h('th', {}, 'Ride key'), h('th', {}, 'Action'), h('th', {}, 'On site pages'))), tbody),
+    h('p', {}, h('button', { class: 'btz-secondary', title: 'Makes LB a modifier: LB + D-pad orbits/tilts, LB + shifters zoom', onclick: () => applyCameraPreset('powerup_l') }, 'Camera preset on LB'), ' ', h('button', { class: 'btz-secondary', onclick: () => applyPresetById('default') }, 'Reset to defaults')),
     h('details', {}, h('summary', {}, 'Debug: virtual controller'),
       h('p', {}, 'Press and hold these like the real buttons; they go through the same mapping. Shift+click latches a button down, so you can test modifier combos with one mouse.'), vc),
     h('h4', {}, 'Log'), logEl,
@@ -315,7 +407,7 @@ function buildPanel() {
   pill.addEventListener('click', () => togglePanel());
   document.body.append(panel);
   placePill();
-  pillTimer = setInterval(placePill, 500); // the page re-renders its header now and then
+  pillTimer = setInterval(placePill, 500);
   terra.onCleanup(() => { clearInterval(pillTimer); panel.remove(); pill.remove(); if (pillWrap) pillWrap.remove(); });
   updateStatus();
 }

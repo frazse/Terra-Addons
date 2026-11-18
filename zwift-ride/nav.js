@@ -1,6 +1,8 @@
 /* ---------------- ride mode: key emulation ---------------- */
 const held = new Map(); // code -> {k, n}
 const fire = (type, k) => {
+  if (k.code === 'Cmd:open_terra') { if (type === 'keydown') terra.bus.emit('terra:open-addons', {}); return; }
+  if (k.code === 'Cmd:cycle_profile') { if (type === 'keydown' && typeof cyclePreset === 'function') cyclePreset(); return; }
   if (k.code.startsWith('Cam:')) { camSet(k.code.slice(4), type === 'keydown'); return; } // camera.js
   if (
     type === 'keydown' &&
@@ -387,6 +389,8 @@ const ACTIONS = {
     if (window.scrollY > 100) scrollTo({ top: 0, behavior: 'smooth' });
     else cycleTopNav(1);
   },
+  open_terra: () => terra.bus.emit('terra:open-addons', {}),
+  cycle_profile: () => { if (typeof cyclePreset === 'function') cyclePreset(); },
 };
 const isNav = (a) => typeof a === 'string' && a.startsWith('nav_');
 let rep = null;
