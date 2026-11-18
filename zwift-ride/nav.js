@@ -3,6 +3,7 @@ const held = new Map(); // code -> {k, n}
 const fire = (type, k) => {
   if (k.code === 'Cmd:open_terra') { if (type === 'keydown') terra.bus.emit('terra:open-addons', {}); return; }
   if (k.code === 'Cmd:cycle_profile') { if (type === 'keydown' && typeof cyclePreset === 'function') cyclePreset(); return; }
+  if (k.code === 'Cmd:voice_ptt') { terra.bus.emit('voice-chat:ptt', { down: type === 'keydown' }); return; }
   if (k.code.startsWith('Cam:')) { camSet(k.code.slice(4), type === 'keydown'); return; } // camera.js
   if (
     type === 'keydown' &&
@@ -343,9 +344,14 @@ function select() {
   el.click();
 }
 
-// Cycle top-level navigation tabs (Dashboard -> Routes -> Events -> Clubs -> Challenges)
+// Cycle top-level navigation tabs (Dashboard -> Routes -> Events -> Clubs -> Badges)
 function cycleTopNav(step = 1) {
-  const order = ['/dashboard', '/routes', '/events', '/clubs', '/challenges'];
+  const liveLinks = [...document.querySelectorAll('header .nav-links a.nav-link[href^="/"], .nav-links a.nav-link[href^="/"]')]
+    .map((a) => a.getAttribute('href'))
+    .filter((h) => h && !h.startsWith('//'));
+  const order = liveLinks.length
+    ? ['/dashboard', ...liveLinks.filter((h) => h !== '/dashboard')]
+    : ['/dashboard', '/routes', '/events', '/clubs', '/badges'];
   const curIdx = order.findIndex((p) => location.pathname.startsWith(p));
   const nextPath = order[((curIdx >= 0 ? curIdx : 0) + step + order.length) % order.length];
   const navLink = [...document.querySelectorAll('.nav-links a.nav-link, a[href]')].find(

@@ -59,12 +59,24 @@ function updateStatus() {
 
 // ---- header button: sits in Biketerra's nav row, right after the last link; floats if there is no header ----
 function headerHost() {
-  const link = (t) => [...document.querySelectorAll('.header a, nav a, a')].find((a) => a.textContent.trim() === t);
-  const first = link('Routes') || link('Dashboard'), last = link('Challenges');
+  const isVisible = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).display !== 'none';
+  const nav = document.querySelector('header nav.nav-links, .header nav.nav-links, nav.nav-links');
+  if (isVisible(nav)) {
+    const links = [...nav.querySelectorAll('a')].filter(isVisible);
+    const last = links[links.length - 1];
+    if (last) {
+      let item = last;
+      while (item.parentElement && item.parentElement !== nav) item = item.parentElement;
+      return { box: nav, item };
+    }
+  }
+  const link = (t) => [...document.querySelectorAll('.header a, header a, nav a, a')].find((a) => isVisible(a) && a.textContent.trim() === t);
+  const first = link('Routes') || link('Dashboard');
+  const last = link('Badges') || link('Challenges') || link('Clubs') || link('Events');
   if (!first || !last) return null;
   let box = last.parentElement;
   while (box && !box.contains(first)) box = box.parentElement;
-  if (!box || box === document.body) return null;
+  if (!box || box === document.body || !isVisible(box)) return null;
   let item = last;
   while (item.parentElement && item.parentElement !== box) item = item.parentElement;
   return { box, item };
@@ -126,6 +138,7 @@ function setAutoVirtualShift(v) {
 const CMD_ACTIONS = [
   ['open_terra', 'Open Terra settings'],
   ['cycle_profile', 'Cycle Ride profile'],
+  ['voice_ptt', 'Voice chat (Push-to-Talk)'],
 ];
 const CMD_LABEL = Object.fromEntries(CMD_ACTIONS);
 const ARROWS = { ArrowUp: '\u2191', ArrowDown: '\u2193', ArrowLeft: '\u2190', ArrowRight: '\u2192' };

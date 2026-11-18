@@ -47,6 +47,7 @@ const DEF = {
     up: [UP], down: [DOWN], left: [LEFT], right: [RIGHT],
     lever_l_pos: [LEFT], lever_l_neg: [LEFT], lever_r_pos: [RIGHT], lever_r_neg: [RIGHT],
     a: [KEY('Enter', 'Enter')], b: [KEY('KeyB', 'b')], y: [KEY('KeyP', 'p')], z: [KEY('KeyC', 'c')],
+    powerup_r: [KEY('Cmd:voice_ptt', 'cmd')],
     onoff_r: [KEY('KeyU', 'u')],
   },
   browse: {
@@ -103,6 +104,7 @@ const PRESETS = {
         up: [UP], down: [DOWN], left: [LEFT], right: [RIGHT],
         lever_l_pos: [LEFT], lever_l_neg: [LEFT], lever_r_pos: [RIGHT], lever_r_neg: [RIGHT],
         a: [KEY('Space', ' ')], b: [KEY('KeyB', 'b')], y: [KEY('KeyP', 'p')], z: [KEY('KeyC', 'c')],
+        powerup_r: [KEY('Cmd:voice_ptt', 'cmd')],
         onoff_r: [KEY('KeyU', 'u')],
       },
       browse: clone(DEF.browse),

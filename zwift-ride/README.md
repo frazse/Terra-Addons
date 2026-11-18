@@ -11,7 +11,7 @@ window's DevTools run `copy(localStorage['btz-config-v1'])`, then save the resul
 `~/.local/share/dev.frazse.terra/addon-data/zwift-ride.json` in the form `{ "config": <pasted json> }`.
 
 ## Header button and ride toggle
-The settings button sits in Biketerra's nav row (right after "Challenges"); on pages without that header it
+The settings button sits in Biketerra's nav row (right after the last nav link, e.g. "Badges"); on pages without that header it
 floats at the bottom-left. The dot is green when a controller is connected, amber while waiting.
 
 **Send ride keys on ride pages** (panel): turn it off to let Biketerra handle the controller itself during

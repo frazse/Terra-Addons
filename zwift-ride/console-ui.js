@@ -192,7 +192,7 @@ function layoutClubsList() {
     }
 }
 
-/* 5. CHALLENGES LIST (/challenges) */
+/* 5. BADGES / CHALLENGES LIST (/badges, /challenges) */
 function layoutChallengesList() {
     document.documentElement.classList.add('btz-page-challenges');
     widenMainContentWrap();
@@ -346,7 +346,7 @@ function scheduleConsoleUi() {
             else if (path === '/events' || path === '/events/') layoutEventsList();
             else if (/^\/events\/.+/.test(path)) layoutDetailPage(true);
             else if (path === '/clubs' || path === '/clubs/') layoutClubsList();
-            else if (path === '/challenges' || path === '/challenges/') layoutChallengesList();
+            else if (path === '/badges' || path === '/badges/' || path === '/challenges' || path === '/challenges/') layoutChallengesList();
             else if (/^\/athletes\/[^/]+/.test(path)) layoutAthletePage();
         }
         updateConsoleHud();
