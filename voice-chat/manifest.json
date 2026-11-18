@@ -1,0 +1,121 @@
+{
+  "id": "voice-chat",
+  "name": "Voice Chat (External Whisper Server)",
+  "version": "0.1.0",
+  "category": "Chat",
+  "description": "Requires an external faster-whisper Wyoming TCP server running outside Terra (e.g. linuxserver/faster-whisper on port 10300). Dictate Biketerra chat via Zwift Ride Push-to-Talk or hands-free Auto mode.",
+  "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate*"],
+  "js": ["main.js"],
+  "css": ["style.css"],
+  "enabled": false,
+  "settings": [
+    {
+      "key": "host",
+      "label": "Whisper server IP / hostname",
+      "type": "text",
+      "default": "",
+      "description": "LAN IP or hostname of your Unraid server running linuxserver/faster-whisper (e.g. 192.168.1.50)."
+    },
+    {
+      "key": "port",
+      "label": "Wyoming TCP port",
+      "type": "number",
+      "default": 10300,
+      "description": "TCP port exposed by linuxserver/faster-whisper (default: 10300)."
+    },
+    {
+      "key": "language",
+      "label": "Language",
+      "type": "text",
+      "default": "en",
+      "description": "ISO language code (e.g. en, sv, de) or 'auto'. Fixed language (e.g. en) avoids misdetections on short words."
+    },
+    {
+      "key": "mode",
+      "label": "Default mic mode",
+      "type": "select",
+      "default": "ptt",
+      "options": ["ptt", "auto"],
+      "description": "ptt = Push-to-Talk (Zwift Ride RB or hotkey) · auto = Rowing hands-free (shows draft, say 'send it' or 'cancel')"
+    },
+    {
+      "key": "wakePhrases",
+      "label": "Wake phrases (legacy wake mode)",
+      "type": "text",
+      "default": "hey chat, chat, send message",
+      "description": "Optional comma-separated trigger phrases if wake mode is used."
+    },
+    {
+      "key": "pttKey",
+      "label": "Keyboard PTT hotkey",
+      "type": "text",
+      "default": "KeyV",
+      "description": "KeyboardEvent.code to hold for Push-to-Talk (e.g. KeyV, Backquote). Blank to disable keyboard PTT."
+    },
+    {
+      "key": "chatToggleKey",
+      "label": "Biketerra chat hotkey",
+      "type": "text",
+      "default": "KeyT",
+      "description": "Biketerra key used to open chat if the chat input is closed (default: KeyT)."
+    },
+    {
+      "key": "sendBehavior",
+      "label": "After PTT transcription",
+      "type": "select",
+      "default": "countdown",
+      "options": ["countdown", "voice", "immediate", "fill"],
+      "description": "countdown = 2s cancelable preview · voice = show draft & wait for 'send'/'cancel' · immediate = post right away · fill = type only"
+    },
+    {
+      "key": "handsFreeSendBehavior",
+      "label": "In AUTO rowing mode",
+      "type": "select",
+      "default": "voice",
+      "options": ["voice", "countdown", "immediate", "fill"],
+      "description": "voice = show draft and wait for you to say 'send' or 'cancel' · countdown = 2s auto-send · immediate = post straight to chat · fill = type only"
+    },
+    {
+      "key": "browserAudioProcessing",
+      "label": "Browser echo & noise suppression",
+      "type": "checkbox",
+      "default": false,
+      "description": "Off = cleaner raw mic audio for Whisper (recommended unless speakers are loud). Enable if bike/fan noise triggers too easily."
+    },
+    {
+      "key": "autoGainBoost",
+      "label": "Gentle auto-gain for quiet mic clips",
+      "type": "checkbox",
+      "default": true,
+      "description": "Softly boosts quiet laptop mic recordings (up to 4x) before sending to Whisper."
+    },
+    {
+      "key": "silenceMs",
+      "label": "Silence stop delay (ms)",
+      "type": "number",
+      "default": 1200,
+      "description": "Hands-free silence duration after speech before sending clip to Whisper (600–3000 ms)."
+    },
+    {
+      "key": "vadSensitivity",
+      "label": "Hands-free mic sensitivity (1–10)",
+      "type": "number",
+      "default": 5,
+      "description": "Higher = picks up quieter speech; lower = ignores louder rower flywheel/fan noise."
+    },
+    {
+      "key": "maxClipSec",
+      "label": "Max clip length (sec)",
+      "type": "number",
+      "default": 20,
+      "description": "Safety cap for a single voice clip (5–45 s)."
+    },
+    {
+      "key": "hudOpacity",
+      "label": "HUD opacity (%)",
+      "type": "number",
+      "default": 88,
+      "description": "30 – 100"
+    }
+  ]
+}
