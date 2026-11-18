@@ -12,7 +12,7 @@ function h(tag, props = {}, ...kids) {
 const logLines = [];
 let tabsEl, hintEl, profileSel;
 const modInputs = {};
-let panel, pill, pillDot, pillLabel, pillWrap, pillTimer, rideToggle, statusEl, lastEl, logEl, savedEl, fallbackEl;
+let panel, pill, pillDot, pillLabel, pillWrap, pillTimer, rideToggle, consoleUiToggle, statusEl, lastEl, logEl, savedEl, fallbackEl;
 const rows = {};
 
 function ulog(...a) { // panel log only
@@ -97,6 +97,16 @@ function setRideEnabled(v) {
   applyShare();
   panel.classList.toggle('btz-ride-off', !v);
   updateStatus();
+}
+
+function setConsoleUiEnabled(v) {
+  consoleUiEnabled = v;
+  terra.storage.set('consoleUiEnabled', v).then(
+    () => flash(v ? 'Console UI on' : 'Console UI off'),
+    (e) => flash('Save failed: ' + e)
+  );
+  if (!v && typeof unwrapAthletePage === 'function') unwrapAthletePage();
+  if (typeof scheduleConsoleUi === 'function') scheduleConsoleUi();
 }
 
 const CMD_ACTIONS = [
@@ -363,6 +373,9 @@ function buildPanel() {
   rideToggle = h('input', { type: 'checkbox', id: 'btz-ride-toggle' });
   rideToggle.checked = rideEnabled;
   rideToggle.addEventListener('change', () => setRideEnabled(rideToggle.checked));
+  consoleUiToggle = h('input', { type: 'checkbox', id: 'btz-console-ui-toggle' });
+  consoleUiToggle.checked = consoleUiEnabled;
+  consoleUiToggle.addEventListener('change', () => setConsoleUiEnabled(consoleUiToggle.checked));
 
   profileSel = h('select', { title: 'Binding profile preset' });
   profileSel.addEventListener('change', () => applyPresetById(profileSel.value));
@@ -378,6 +391,8 @@ function buildPanel() {
     statusEl, fallbackEl,
     h('label', { class: 'btz-toggle' }, rideToggle, ' Send ride keys on ride pages'),
     h('p', {}, 'Turn off to let Biketerra handle the controller itself during rides. Navigation on other pages keeps working.'),
+    h('label', { class: 'btz-toggle' }, consoleUiToggle, ' Enable Console UI (widescreen layout & bottom HUD)'),
+    h('p', {}, 'Turn off on mobile devices or smaller screens to keep Biketerra\'s default layout and hide the bottom controller bar.'),
     h('h4', {}, 'Binding profile'),
     h('div', { class: 'btz-profile-row' },
       profileSel,

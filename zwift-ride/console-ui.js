@@ -1,9 +1,18 @@
 /* ---------- Console UI Layout Engine v6 (Clean Horizon SPA Reset & Exact Selectors) ---------- */
 
-let consoleUiEnabled = true;
+let consoleUiEnabled = false;
 let hudEl = null;
 let lastHudSig = '';
 let uiRaf = 0;
+
+function unwrapAthletePage() {
+    document.querySelectorAll('.detail-page > .btz-athlete-right').forEach((wrap) => {
+        const parent = wrap.parentElement;
+        while (wrap.firstChild) parent.insertBefore(wrap.firstChild, wrap);
+        wrap.remove();
+        parent.style.removeProperty('--btz-left-rows');
+    });
+}
 
 function clearPageClasses() {
     document.documentElement.classList.remove(
@@ -13,7 +22,8 @@ function clearPageClasses() {
         'btz-page-events',
         'btz-page-event-detail',
         'btz-page-clubs',
-        'btz-page-challenges'
+        'btz-page-challenges',
+        'btz-page-athlete'
     );
     // Clean up all btz layout classes on persistent SvelteKit wrappers (.main, .content, .wrap)
     const dirtyClasses = [
@@ -27,9 +37,11 @@ function clearPageClasses() {
         'btz-events-date-header',
         'btz-clubs-grid',
         'btz-club-card-item',
-        'btz-detail-cockpit-grid'
+        'btz-detail-cockpit-grid',
+        'btz-athlete-grid',
+        'btz-athlete-left-item'
     ];
-    document.querySelectorAll('.main, .main .content, .main .wrap').forEach((el) => {
+    document.querySelectorAll('.main, .main .content, .main .wrap, .detail-page, .detail-page > *').forEach((el) => {
         el.classList.remove(...dirtyClasses);
     });
 }
@@ -237,6 +249,41 @@ function layoutDetailPage(isEvent) {
     }
 }
 
+/* 7. ATHLETE DETAIL (/athletes/:id) — Left: profile/stats/highlights, Right: nav-pills + conditional tiles */
+function layoutAthletePage() {
+    document.documentElement.classList.add('btz-page-athlete');
+    widenMainContentWrap();
+
+    const detailPage = document.querySelector('.detail-page');
+    if (!detailPage) return;
+
+    let rightCol = detailPage.querySelector(':scope > .btz-athlete-right');
+    const directRight = [...detailPage.children].filter(
+        (el) => el.classList.contains('nav-pills') || el.classList.contains('tile')
+    );
+
+    if (!rightCol && !directRight.length) return;
+
+    if (!rightCol) {
+        rightCol = document.createElement('div');
+        rightCol.className = 'btz-athlete-right';
+        detailPage.appendChild(rightCol);
+    }
+    for (const el of directRight) {
+        rightCol.appendChild(el);
+    }
+
+    let leftCount = 0;
+    for (const child of detailPage.children) {
+        if (child === rightCol) continue;
+        child.classList.add('btz-athlete-left-item');
+        leftCount++;
+    }
+
+    detailPage.classList.add('btz-athlete-grid');
+    detailPage.style.setProperty('--btz-left-rows', String(Math.max(1, leftCount)));
+}
+
 function updateConsoleHud() {
     if (!consoleUiEnabled || mode === 'ride' || location.pathname.startsWith(SPECTATE_PATH_PREFIX)) {
         if (hudEl && hudEl.style.display !== 'none') hudEl.style.display = 'none';
@@ -290,7 +337,9 @@ function scheduleConsoleUi() {
         uiRaf = 0;
         clearPageClasses();
         const path = location.pathname;
-        if (mode === 'browse' && consoleUiEnabled) {
+        const active = mode === 'browse' && consoleUiEnabled;
+        if (!active || !/^\/athletes\/[^/]+/.test(path)) unwrapAthletePage();
+        if (active) {
             if (path === '/dashboard' || path === '/dashboard/') layoutDashboard();
             else if (path === '/routes' || path === '/routes/') layoutRoutesList();
             else if (/^\/routes\/.+/.test(path)) layoutDetailPage(false);
@@ -298,12 +347,14 @@ function scheduleConsoleUi() {
             else if (/^\/events\/.+/.test(path)) layoutDetailPage(true);
             else if (path === '/clubs' || path === '/clubs/') layoutClubsList();
             else if (path === '/challenges' || path === '/challenges/') layoutChallengesList();
+            else if (/^\/athletes\/[^/]+/.test(path)) layoutAthletePage();
         }
         updateConsoleHud();
     });
 }
 
 const consoleObserver = new MutationObserver((mutations) => {
+    if (!consoleUiEnabled) return;
     for (const m of mutations) {
         if (
             m.target &&
@@ -319,11 +370,11 @@ const consoleObserver = new MutationObserver((mutations) => {
     }
 });
 consoleObserver.observe(document.body, { childList: true, subtree: true });
-scheduleConsoleUi();
 
 terra.onCleanup(() => {
     consoleObserver.disconnect();
     if (uiRaf) cancelAnimationFrame(uiRaf);
+    unwrapAthletePage();
     clearPageClasses();
     hudEl?.remove();
 });

@@ -1,7 +1,7 @@
 {
   "id": "zwift-ride",
   "name": "Zwift Ride controller",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "category": "Hardware",
   "description": "Zwift Ride controller: ride hotkeys, D-pad navigation, BLE battery status, binding presets, and a mapping panel.",
   "matches": ["https://biketerra.com/*", "https://*.biketerra.com/*"],
