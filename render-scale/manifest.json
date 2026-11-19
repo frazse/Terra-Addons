@@ -1,0 +1,20 @@
+{
+  "id": "render-scale",
+  "name": "Render Scale",
+  "version": "0.1.0",
+  "category": "HUD",
+  "description": "Adds 0.5x and 0.75x sub-native 3D render scale options for low-end devices (plus 1x / 1.5x / 2x overrides) across both WebGPU and WebGL.",
+  "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate*"],
+  "js": ["main.js"],
+  "enabled": false,
+  "settings": [
+    {
+      "key": "scale",
+      "label": "3D render scale",
+      "type": "select",
+      "default": "0.75x",
+      "options": ["0.5x", "0.75x", "1x", "1.5x", "2x", "Auto (Biketerra)"],
+      "description": "Sub-native 0.5x / 0.75x cuts GPU fill-rate on low-end devices while keeping HUD overlays crisp. Auto restores Biketerra's native setting."
+    }
+  ]
+}
