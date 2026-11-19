@@ -1,7 +1,7 @@
 {
   "id": "voice-chat",
   "name": "Voice Chat (External Whisper Server)",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "category": "Chat",
   "description": "Requires an external faster-whisper Wyoming TCP server running outside Terra (e.g. linuxserver/faster-whisper on port 10300). Dictate Biketerra chat via Zwift Ride Push-to-Talk or hands-free Auto mode.",
   "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate*"],
@@ -81,6 +81,14 @@
       "type": "checkbox",
       "default": false,
       "description": "Off = cleaner raw mic audio for Whisper (recommended unless speakers are loud). Enable if bike/fan noise triggers too easily."
+    },
+    {
+      "key": "micSource",
+      "label": "Microphone input source",
+      "type": "select",
+      "default": "Auto (BT on Android)",
+      "options": ["Auto (BT on Android)", "System Default", "Prefer Bluetooth"],
+      "description": "Auto (BT on Android) selects a connected Bluetooth headset on Android while leaving desktop mic choice to your OS. 'Prefer Bluetooth' tries Bluetooth everywhere."
     },
     {
       "key": "autoGainBoost",

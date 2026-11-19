@@ -28,6 +28,7 @@
     sendBehavior: 'countdown',
     handsFreeSendBehavior: 'voice',
     browserAudioProcessing: false,
+    micSource: 'Auto (BT on Android)',
     autoGainBoost: true,
     silenceMs: 1200,
     vadSensitivity: 5,
@@ -383,6 +384,27 @@
     return out;
   }
 
+  const BT_MIC_LABEL_RE = /(?:^|[^a-z])(bluetooth|bt|sco|ble|hfp|hands[- ]?free|shokz|openrun|airpods|galaxy buds|pixel buds|jabra|bose)(?:[^a-z]|$)/i;
+
+  function isAndroidDevice() {
+    try { return /Android/i.test((navigator && navigator.userAgent) || ''); } catch { return false; }
+  }
+
+  function shouldPreferBluetoothMic() {
+    const pref = String(S.micSource || 'Auto (BT on Android)');
+    if (pref === 'Prefer Bluetooth') return true;
+    if (pref === 'System Default') return false;
+    return isAndroidDevice();
+  }
+
+  function pickBluetoothAudioInput(devices) {
+    const inputs = (devices || []).filter((d) => d && d.kind === 'audioinput');
+    const nonDefault = inputs.filter((d) => d.deviceId && d.deviceId !== 'default' && d.deviceId !== 'communications');
+    const match = nonDefault.find((d) => BT_MIC_LABEL_RE.test(d.label || '')) ||
+      inputs.find((d) => BT_MIC_LABEL_RE.test(d.label || ''));
+    return { inputs, btDevice: match || null };
+  }
+
   function exportHelpersForTests() {
     return {
       Resampler16k,
@@ -395,6 +417,7 @@
       isSendVoiceCommand,
       isCancelVoiceCommand,
       normalizeQuietPcm16,
+      pickBluetoothAudioInput,
       ensureChatInput: () => ensureChatInput(),
       postToBiketerraChat: (text, auto) => postToBiketerraChat(text, auto),
       handleTranscribedText: (rawText, fromHandsFree) => handleTranscribedText(rawText, fromHandsFree),
@@ -842,6 +865,8 @@
   let zeroGainNode = null;
   let resampler = null;
   let micStartingPromise = null;
+  let activeMicLabel = '';
+  let activeMicDeviceId = '';
 
   const preRoll = new ByteRingBuffer(16000); // 500 ms @ 16kHz 16-bit mono
   let isRecording = false;
@@ -874,6 +899,38 @@
     return !!(mediaStream && audioCtx && audioCtx.state === 'running');
   }
 
+  async function inspectAudioInputs(logList = false) {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.enumerateDevices !== 'function') {
+      return { inputs: [], btDevice: null };
+    }
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const { inputs, btDevice } = pickBluetoothAudioInput(devices);
+      if (logList) {
+        const summary = inputs.map((d) => `${d.label || '(unlabeled)'} [${String(d.deviceId || '').slice(0, 12)}]`);
+        log('audio inputs:', summary.length ? summary.join(' | ') : '(none)');
+      }
+      return { inputs, btDevice };
+    } catch (e) {
+      log('enumerateDevices error:', e && e.message ? e.message : e);
+      return { inputs: [], btDevice: null };
+    }
+  }
+
+  async function openAudioStream(preferredDeviceId, exact = false) {
+    const useBrowserDsp = !!S.browserAudioProcessing;
+    const audioConstraints = {
+      channelCount: 1,
+      echoCancellation: useBrowserDsp,
+      noiseSuppression: useBrowserDsp,
+      autoGainControl: useBrowserDsp,
+    };
+    if (preferredDeviceId) {
+      audioConstraints.deviceId = exact ? { exact: preferredDeviceId } : { ideal: preferredDeviceId };
+    }
+    return navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false });
+  }
+
   async function ensureMicStarted() {
     if (cleaned) return false;
     if (mediaStream && audioCtx) {
@@ -890,20 +947,38 @@
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
           throw new Error('Microphone API unavailable in this browser');
         }
-        const useBrowserDsp = !!S.browserAudioProcessing;
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            channelCount: 1,
-            echoCancellation: useBrowserDsp,
-            noiseSuppression: useBrowserDsp,
-            autoGainControl: useBrowserDsp,
-          },
-          video: false,
-        });
+        const preferBt = shouldPreferBluetoothMic();
+        const pre = await inspectAudioInputs(true);
+        let stream = await openAudioStream(preferBt && pre.btDevice ? pre.btDevice.deviceId : '', false);
         if (cleaned) {
           stream.getTracks().forEach((t) => { try { t.stop(); } catch {} });
           return false;
         }
+
+        let track = stream.getAudioTracks()[0] || null;
+        let trackLabel = track ? String(track.label || '') : '';
+        let trackDeviceId = (track && track.getSettings && track.getSettings().deviceId) || '';
+
+        if (preferBt && !BT_MIC_LABEL_RE.test(trackLabel)) {
+          const post = await inspectAudioInputs(!pre.btDevice);
+          const postBt = post.btDevice;
+          if (postBt && postBt.deviceId && postBt.deviceId !== trackDeviceId) {
+            log('switching mic to Bluetooth device:', postBt.label || postBt.deviceId);
+            try {
+              const btStream = await openAudioStream(postBt.deviceId, true);
+              stream.getTracks().forEach((t) => { try { t.stop(); } catch {} });
+              stream = btStream;
+              track = stream.getAudioTracks()[0] || null;
+              trackLabel = track ? String(track.label || '') : '';
+              trackDeviceId = (track && track.getSettings && track.getSettings().deviceId) || '';
+            } catch (btErr) {
+              log('Bluetooth mic reopen failed (keeping initial stream):', btErr && btErr.message ? btErr.message : btErr);
+            }
+          }
+        }
+        activeMicLabel = trackLabel;
+        activeMicDeviceId = trackDeviceId;
+        log('mic active:', activeMicLabel || '(unknown)', activeMicDeviceId ? `[${activeMicDeviceId.slice(0, 12)}]` : '');
 
         const AC = window.AudioContext || window.webkitAudioContext;
         const ctx = new AC();
@@ -982,6 +1057,8 @@
     recordBytes = 0;
     preRoll.clear();
     currentLevelPct = 0;
+    activeMicLabel = '';
+    activeMicDeviceId = '';
 
     if (procNode) { try { procNode.onaudioprocess = null; procNode.disconnect(); } catch {} procNode = null; }
     if (zeroGainNode) { try { zeroGainNode.disconnect(); } catch {} zeroGainNode = null; }
@@ -1679,6 +1756,29 @@
   window.addEventListener('blur', onBlur);
   window.addEventListener('pointerdown', onUserGestureResume, { passive: true });
 
+  let deviceChangeTimer = 0;
+  const onMediaDeviceChange = () => {
+    if (cleaned) return;
+    clearTimeout(deviceChangeTimer);
+    deviceChangeTimer = setTimeout(async () => {
+      if (cleaned || !isMicLive() || isRecording || micStartingPromise) return;
+      const preferBt = shouldPreferBluetoothMic();
+      const { btDevice } = await inspectAudioInputs(true);
+      if (preferBt && btDevice && btDevice.deviceId && btDevice.deviceId !== activeMicDeviceId) {
+        log('Bluetooth audio input detected; restarting mic ->', btDevice.label || btDevice.deviceId);
+        stopMicHardware();
+        ensureMicStarted().catch(() => {});
+      } else if (preferBt && !btDevice && BT_MIC_LABEL_RE.test(activeMicLabel)) {
+        log('Bluetooth audio input disconnected; restarting mic');
+        stopMicHardware();
+        ensureMicStarted().catch(() => {});
+      }
+    }, 400);
+  };
+  if (navigator.mediaDevices && typeof navigator.mediaDevices.addEventListener === 'function') {
+    navigator.mediaDevices.addEventListener('devicechange', onMediaDeviceChange);
+  }
+
   let unsubSettings = null;
   if (terra.settings && terra.settings.onChange) {
     unsubSettings = terra.settings.onChange(async (ev) => {
@@ -1690,7 +1790,7 @@
         if (isHandsFreeMode()) await toggleHandsFreeArmed(true);
         else await toggleHandsFreeArmed(false);
       }
-      if (ev && ev.key === 'browserAudioProcessing' && isMicLive()) {
+      if (ev && (ev.key === 'browserAudioProcessing' || ev.key === 'micSource') && isMicLive()) {
         stopMicHardware();
         if (isHandsFreeMode() ? handsFreeArmed : true) {
           ensureMicStarted().catch(() => {});
@@ -1751,7 +1851,28 @@
         }
       });
 
-      row.append(btnTcp, btnChat);
+      const btnMic = document.createElement('button');
+      btnMic.type = 'button';
+      btnMic.className = 'tvc-btn';
+      btnMic.textContent = 'Test / Detect Mic';
+      btnMic.addEventListener('click', async () => {
+        status.textContent = 'Checking microphone & audio inputs…';
+        const wasLive = isMicLive();
+        const ok = await ensureMicStarted();
+        if (!ok) {
+          status.textContent = 'Microphone unavailable or permission denied (check Terra logs).';
+          return;
+        }
+        const usedLabel = activeMicLabel || '(unlabeled)';
+        const { inputs, btDevice } = await inspectAudioInputs(false);
+        const names = inputs.map((d) => d.label || '(unlabeled)').join(', ') || 'none';
+        status.textContent = `Active mic: ${usedLabel}${btDevice ? ` · BT detected: ${btDevice.label || btDevice.deviceId}` : ' · No BT input detected'} · All inputs (${inputs.length}): ${names}`;
+        if (!wasLive && !isHandsFreeMode() && !isRecording) {
+          stopMicHardware();
+        }
+      });
+
+      row.append(btnTcp, btnChat, btnMic);
       box.append(row, status);
       slot.appendChild(box);
     });
@@ -1764,6 +1885,7 @@
     cancelPendingToast();
     clearTimeout(toastHideTimer);
     clearTimeout(mouseHoldTimer);
+    clearTimeout(deviceChangeTimer);
     for (const conn of [...activeConns.keys()]) {
       try { terra.tcp.close(conn).catch(() => {}); } catch {}
     }
@@ -1773,6 +1895,9 @@
     window.removeEventListener('keyup', onKeyUp, true);
     window.removeEventListener('blur', onBlur);
     window.removeEventListener('pointerdown', onUserGestureResume);
+    if (navigator.mediaDevices && typeof navigator.mediaDevices.removeEventListener === 'function') {
+      try { navigator.mediaDevices.removeEventListener('devicechange', onMediaDeviceChange); } catch {}
+    }
     try { unsubBusPtt && unsubBusPtt(); } catch {}
     try { unsubTcpFrame && unsubTcpFrame(); } catch {}
     try { unsubTcpState && unsubTcpState(); } catch {}
