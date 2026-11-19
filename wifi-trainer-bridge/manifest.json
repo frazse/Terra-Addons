@@ -1,7 +1,7 @@
 {
   "id": "wifi-trainer-bridge",
   "name": "Wi-Fi Trainer Bridge",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "Drives a Wi-Fi Wahoo Kickr from Biketerra over the WFTNP protocol: feeds the trainer's real power & cadence into the game, and relays resistance control (erg / sim) to the Kickr. Host & port are configurable.",
   "matches": ["https://biketerra.com/*"],
   "enabled": true,

@@ -1,3 +1,6 @@
+## 2.0.3
+- Do not intercept addon-owned `terra.ble.request` (`__terraOwner`) calls (fixes Zwift Ride Pair controller returning KICKR Wi-Fi instead of opening the chooser)
+
 ## 2.0.2
 - Fix auto-pair 10s stall and speed up WFTNP reconnect
 

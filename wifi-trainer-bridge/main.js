@@ -949,6 +949,7 @@ if (typeof navigator !== 'undefined' && navigator.bluetooth && typeof navigator.
 
     const origRequestDevice = navigator.bluetooth.requestDevice;
     navigator.bluetooth.requestDevice = async function (options) {
+      if (options && options.__terraOwner) return origRequestDevice.apply(this, arguments);
       if (isTrainerRequest(options)) {
         // auto-trainer (bike vs row) decides whether this is a rowing session. It's the
         // ONLY signal that says "row" (a bike ride resolves the instant the controller
