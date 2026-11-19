@@ -91,7 +91,9 @@ let longTaskObs = null;
 
 // Native telemetry state
 let perfInFlight = false;
+let perfRepollQueued = false;
 let latestPerf = null;
+let lastBaseFps = null;
 
 // Biketerra 3D engine hook state
 let hookedEngine = null;
@@ -113,7 +115,30 @@ const formatTris = (tris) => {
   return `${Math.round(tris)}△`;
 };
 
+const computeFramegenFps = (baseFps) => {
+  const fg = latestPerf && latestPerf.framegen;
+  if (!fg || !fg.active || baseFps == null) return null;
+  if (fg.adaptive) {
+    const target = fg.targetFps || 60;
+    const maxMult = fg.maxMultiplier || 4;
+    return baseFps >= target ? baseFps : Math.min(target, baseFps * maxMult);
+  }
+  const mult = fg.multiplier || 2;
+  return baseFps * mult;
+};
+
+const renderFps = (baseFps) => {
+  if (baseFps == null) {
+    fpsEl.textContent = '--';
+    return;
+  }
+  const fgFps = computeFramegenFps(baseFps);
+  fpsEl.textContent = fgFps != null ? `${baseFps}/${fgFps}` : String(baseFps);
+};
+
 const renderPerfStats = (p) => {
+  renderFps(lastBaseFps);
+
   if (!p) {
     wraps.cpu.style.display = 'none';
     wraps.gpu.style.display = 'none';
@@ -198,12 +223,17 @@ const syncVisibility = () => {
 };
 syncVisibility();
 
-const pollPerfStats = () => {
-  if (!running || perfInFlight) return;
-  if (!(S.show_cpu || S.show_gpu)) return;
+const pollPerfStats = (force = false) => {
+  if (!running) return;
+  if (perfInFlight) {
+    if (force) perfRepollQueued = true;
+    return;
+  }
+  if (!force && !(S.show_cpu || S.show_gpu)) return;
   if (!terra.perf || typeof terra.perf.stats !== 'function') return;
 
   perfInFlight = true;
+  perfRepollQueued = false;
   terra.perf
     .stats()
     .then((res) => {
@@ -215,6 +245,10 @@ const pollPerfStats = () => {
     .catch(() => {})
     .finally(() => {
       perfInFlight = false;
+      if (perfRepollQueued && running) {
+        perfRepollQueued = false;
+        pollPerfStats(true);
+      }
     });
 };
 
@@ -407,7 +441,13 @@ observer.observe(document.body, {
 window.addEventListener('resize', schedulePositionUpdate);
 updatePosition();
 syncEngineHook();
-pollPerfStats();
+pollPerfStats(true);
+
+const unsubFramegen = terra.bus?.on
+  ? terra.bus.on('terra:framegen-changed', () => {
+      pollPerfStats(true);
+    })
+  : null;
 
 const unsubSettings = terra.settings?.onChange
   ? terra.settings.onChange(async () => {
@@ -506,7 +546,9 @@ const loop = (now) => {
 
   const delta = now - lastSecTime;
   if (delta >= 1000) {
-    fpsEl.textContent = Math.round((frameCount * 1000) / delta);
+    const baseFps = Math.round((frameCount * 1000) / delta);
+    lastBaseFps = baseFps;
+    renderFps(baseFps);
     updateExtraMetrics(now, delta, frameCount);
     frameCount = 0;
     maxFrameDt = 0;
@@ -527,6 +569,7 @@ terra.onCleanup(() => {
     try { longTaskObs.disconnect(); } catch {}
   }
   if (typeof unsubSettings === 'function') unsubSettings();
+  if (typeof unsubFramegen === 'function') unsubFramegen();
   window.removeEventListener('resize', schedulePositionUpdate);
   el.remove();
 });
