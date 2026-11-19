@@ -261,7 +261,10 @@ function btSpeedKph(r) {
   return null;
 }
 
-function labelText(name, st, r, distM) {
+const SPEED_REFRESH_MS = 250; // 4Hz speed readout cache per rider
+const speedCache = new Map();
+
+function labelText(name, st, r, distM, cacheKey) {
   const parts = [];
   const pwrBt = btNum(r, ['power', 'watts', 'wattage']);
   const pwr = pwrBt != null ? pwrBt : (st && avail(st.power) ? +st.power : null);
@@ -272,8 +275,23 @@ function labelText(name, st, r, distM) {
     parts.push('(' + fmt1(w) + ' W/kg)');
   }
   if (S.showSpeed) {
-    const kph = btSpeedKph(r);
-    const spd = kph != null ? kph : (st && avail(st.speed) ? +st.speed * 3.6 : null);
+    let spd = null;
+    if (!r) {
+      spd = (st && avail(st.speed)) ? +st.speed * 3.6 : null;
+    } else if (st && avail(st.speed)) {
+      spd = +st.speed * 3.6;
+    } else {
+      const key = cacheKey != null ? cacheKey : r;
+      const nowMs = performance.now();
+      const prev = speedCache.get(key);
+      if (prev && (nowMs - prev.at) < SPEED_REFRESH_MS) {
+        spd = prev.spd;
+      } else {
+        const kph = btSpeedKph(r);
+        spd = kph != null ? kph : null;
+        speedCache.set(key, { spd, at: nowMs });
+      }
+    }
     if (spd != null) parts.push(fmt1(spd) + ' km/h');
   }
   if (S.showCadence) {
@@ -479,6 +497,7 @@ function makeFeature(app) {
       if (showEgo && focal && focal.sim) list.push({ r: focal, focal: true });
       for (const r of (R.riders || [])) {
         if (!r || !r.sim) continue;
+        if (r._isTerraGhost) continue;
         if (r === focal) continue;                    // already pushed above
         list.push({ r, focal: false });
       }
@@ -547,7 +566,7 @@ function makeFeature(app) {
 
         /* ── label ────────────────────────────────────────────────────── */
         const st = statsFor(id, isFocal, focalIsEgo, r);
-        const text = labelText(nameFor(r, isFocal, id), st, r, distM);
+        const text = labelText(nameFor(r, isFocal, id), st, r, distM, id);
         if (!el) {                  // lazy-create (also survives a page navigation)
           el = document.createElement('div');
           el.className = 'np' + (isFocal ? ' np-focal' : '');
@@ -766,6 +785,7 @@ function cleanup() {
   plates.clear();
   lastActive.clear();
   statsById.clear();
+  speedCache.clear();
   if (ov.parentNode) ov.remove();
   for (const k of ['__nameplates']) { try { delete window[k]; } catch (e) {} }
   log('nameplates cleaned up');

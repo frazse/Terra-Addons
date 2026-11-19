@@ -1,7 +1,7 @@
 {
   "id": "nameplates",
   "name": "Rider Nameplates",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "category": "HUD",
   "description": "Floating screen-space nameplates above all riders (ego + bots), driven directly by btApp.riderController with biketerra-ride fallback and full cog-menu customization.",
   "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
