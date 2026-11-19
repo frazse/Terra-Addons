@@ -77,6 +77,17 @@ An addon is a folder containing a `manifest.json` file and JavaScript/CSS assets
 }
 ```
 
+### `CHANGELOG.md` Convention
+
+Whenever updating or bumping an addon, add a `## <version>` section at the top of `<addon>/CHANGELOG.md` in the same commit:
+
+```markdown
+## 1.0.1
+- Describe what changed in this version
+```
+
+Terra's in-app GitHub Catalog parses each addon's `CHANGELOG.md` to display release notes for any versions newer than the user's installed copy.
+
 ---
 
 ### The `terra` API Object
