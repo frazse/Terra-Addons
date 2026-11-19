@@ -1,9 +1,9 @@
 {
   "id": "rider-speed",
   "name": "Rider Speed",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "category": "HUD",
-  "description": "Shows each rider's live speed (plus optional speed delta and W/kg trend arrow) in the rider list, driven by btApp.riderController (~5Hz) with biketerra-ride fallback.",
+  "description": "Shows each rider's live speed (plus optional speed delta and W/kg trend arrow) in the rider list, using biketerra-ride (~2Hz) for speed and btApp.riderController for W/kg trends.",
   "matches": [
     "https://biketerra.com/ride*",
     "https://biketerra.com/spectate/*"

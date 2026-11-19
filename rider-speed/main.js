@@ -11,6 +11,8 @@
 
   // Per-rider W/kg EMA state for trend detection (keyed by lowercased name or '__me__')
   const wkgTrend = new Map(); // key -> { fast, slow, arrow, lastT }
+  const SPEED_REFRESH_MS = 250; // 4 Hz cap for speed readout even when DOM mutates faster
+  const speedCache = new Map(); // nameKey -> { ms, diff, at }
 
   async function loadSettings() {
     const s = await terra.settings.all();
@@ -78,37 +80,17 @@
   function buildSnapshot() {
     const byName = new Map();
     let focalSpeed = null;
+    let focalSpeedFromFeed = false;
     let focalWkg = null;
+    const feedTs = (latest && latest.timestamp) ? Number(latest.timestamp) : 0;
 
-    const rc = window.btApp && (window.btApp.riderController || window.btApp.rideController);
-    if (rc) {
-      const focal = rc.focalRider || rc.ego || null;
-      if (focal) {
-        focalSpeed = btSpeedMs(focal);
-        focalWkg = btWkg(focal);
-        const fn = btRiderName(focal);
-        if (fn && (focalSpeed !== null || focalWkg !== null)) {
-          byName.set(fn, { speed: focalSpeed, wkg: focalWkg });
-        }
-      }
-      if (Array.isArray(rc.riders)) {
-        for (const r of rc.riders) {
-          if (!r) continue;
-          const nm = btRiderName(r);
-          if (!nm) continue;
-          const sp = btSpeedMs(r);
-          const wk = btWkg(r);
-          if (sp !== null || wk !== null) byName.set(nm, { speed: sp, wkg: wk });
-        }
-      }
-    }
-
-    // Fallback/supplement from biketerra-ride broadcast
+    // Prefer biketerra-ride broadcast (~2Hz) for speed so it matches native ride cadence
     if (latest) {
-      if (focalSpeed === null && latest.ego && finite(latest.ego.speed) !== null) {
+      if (latest.ego && finite(latest.ego.speed) !== null) {
         focalSpeed = finite(latest.ego.speed);
+        focalSpeedFromFeed = true;
       }
-      if (focalWkg === null && latest.ego && finite(latest.ego.wkg) !== null) {
+      if (latest.ego && finite(latest.ego.wkg) !== null) {
         focalWkg = finite(latest.ego.wkg);
       }
       if (Array.isArray(latest.riders)) {
@@ -116,15 +98,54 @@
           if (!r) continue;
           const nm = normName(r.name);
           if (!nm) continue;
-          const cur = byName.get(nm) || { speed: null, wkg: null };
-          if (cur.speed === null && finite(r.speed) !== null) cur.speed = finite(r.speed);
-          if (cur.wkg === null && finite(r.wkg) !== null) cur.wkg = finite(r.wkg);
+          const cur = byName.get(nm) || { speed: null, speedFromFeed: false, wkg: null };
+          if (finite(r.speed) !== null) {
+            cur.speed = finite(r.speed);
+            cur.speedFromFeed = true;
+          }
+          if (finite(r.wkg) !== null) cur.wkg = finite(r.wkg);
           if (cur.speed !== null || cur.wkg !== null) byName.set(nm, cur);
         }
       }
     }
 
-    return { focalSpeed, focalWkg, byName };
+    // Use btApp.riderController for fast W/kg updates & fallback speed if broadcast missing
+    const rc = window.btApp && (window.btApp.riderController || window.btApp.rideController);
+    if (rc) {
+      const focal = rc.focalRider || rc.ego || null;
+      if (focal) {
+        if (focalSpeed === null) focalSpeed = btSpeedMs(focal);
+        const wk = btWkg(focal);
+        if (wk !== null) focalWkg = wk;
+        const fn = btRiderName(focal);
+        if (fn && (focalSpeed !== null || focalWkg !== null)) {
+          const cur = byName.get(fn) || { speed: null, speedFromFeed: false, wkg: null };
+          if (cur.speed === null && focalSpeed !== null) {
+            cur.speed = focalSpeed;
+            cur.speedFromFeed = focalSpeedFromFeed;
+          }
+          if (focalWkg !== null) cur.wkg = focalWkg;
+          byName.set(fn, cur);
+        }
+      }
+      if (Array.isArray(rc.riders)) {
+        for (const r of rc.riders) {
+          if (!r) continue;
+          const nm = btRiderName(r);
+          if (!nm) continue;
+          const cur = byName.get(nm) || { speed: null, speedFromFeed: false, wkg: null };
+          if (cur.speed === null) {
+            const sp = btSpeedMs(r);
+            if (sp !== null) cur.speed = sp;
+          }
+          const wk = btWkg(r);
+          if (wk !== null) cur.wkg = wk;
+          if (cur.speed !== null || cur.wkg !== null) byName.set(nm, cur);
+        }
+      }
+    }
+
+    return { focalSpeed, focalSpeedFromFeed, feedTs, focalWkg, byName };
   }
 
   function updateTrend(key, wkg, now) {
@@ -160,11 +181,29 @@
       const nameEl = row.querySelector('.rider-name');
       const nameKey = isMe ? '__me__' : normName(nameEl ? nameEl.textContent : '');
       const entry = isMe
-        ? { speed: snap.focalSpeed, wkg: snap.focalWkg }
+        ? { speed: snap.focalSpeed, speedFromFeed: snap.focalSpeedFromFeed, wkg: snap.focalWkg }
         : (nameKey ? snap.byName.get(nameKey) : null);
 
-      const ms = entry ? entry.speed : null;
-      const wkg = entry ? entry.wkg : null;
+      const rawMs = entry ? entry.speed : null;
+      const fromFeed = !!(entry && entry.speedFromFeed);
+      const rawWkg = entry ? entry.wkg : null;
+      const key = nameKey || '__anon__';
+      const nowMs = performance.now();
+      const cached = speedCache.get(key);
+      let ms = rawMs;
+      let focalSpd = snap.focalSpeed;
+      if (rawMs != null) {
+        if (fromFeed) {
+          // Biketerra-ride broadcasts at ~2Hz; update immediately whenever a new frame lands
+          speedCache.set(key, { ms: rawMs, focalSpd: snap.focalSpeed, at: nowMs, feedTs: snap.feedTs });
+        } else if (cached && (nowMs - cached.at) < SPEED_REFRESH_MS) {
+          ms = cached.ms;
+          focalSpd = cached.focalSpd;
+        } else {
+          speedCache.set(key, { ms: rawMs, focalSpd: snap.focalSpeed, at: nowMs, feedTs: 0 });
+        }
+      }
+      const wkg = rawWkg;
 
       let span = stats.querySelector('.' + MARK);
       if (ms == null) {
@@ -200,8 +239,8 @@
       span.querySelector('.num').textContent = fmt(ms);
 
       const deltaEl = span.querySelector('.tr-delta');
-      if (showDelta && !isMe && snap.focalSpeed !== null) {
-        const diff = (ms - snap.focalSpeed) * factor;
+      if (showDelta && !isMe && focalSpd !== null) {
+        const diff = (ms - focalSpd) * factor;
         if (Math.abs(diff) >= 0.2) {
           deltaEl.textContent = (diff > 0 ? '+' : '') + diff.toFixed(1) + ' ';
           deltaEl.className = 'tr-delta ' + (diff > 0 ? 'pos' : 'neg');
@@ -245,13 +284,11 @@
     offRide = terra.ride.onRide((frame) => {
       if (!frame) return;
       latest = frame;
-      if (!(window.btApp && (window.btApp.riderController || window.btApp.rideController))) {
-        schedule();
-      }
+      schedule();
     });
   }
 
-  // 5 Hz live polling when btApp.riderController is available
+  // 5 Hz live polling when btApp.riderController is available (W/kg trends)
   btTimer = setInterval(() => {
     if (window.btApp && (window.btApp.riderController || window.btApp.rideController)) {
       schedule();
@@ -266,6 +303,8 @@
     if (btTimer) clearInterval(btTimer);
     mo.disconnect();
     if (offRide) offRide();
+    speedCache.clear();
+    wkgTrend.clear();
     document.querySelectorAll('.' + MARK).forEach((el) => el.remove());
   });
 
