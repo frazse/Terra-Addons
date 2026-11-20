@@ -52,93 +52,297 @@
   const boundGraphs = new WeakSet();
   const graphClickCleanups = [];
 
+  let dockedPanel = null;
+
   const CSS = `
+/* Host elevation panel when Karoo Climber is docked seamlessly above .elev-graph */
+.panel-profile.tr-cl-profile-host {
+  height: auto !important;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.panel-profile.tr-cl-profile-host > .elev-graph {
+  height: var(--hud-profile-h, min(6rem, 15svh));
+  flex: none;
+}
+
+/* Base card — mirrors Biketerra's in-ride Rider Stat HUD (--overlay-4, borderless, rem-scaled) */
 .tr-cl {
-  position: fixed; left: 16px; bottom: 132px; top: auto; z-index: 2147483640;
-  width: 344px; border-radius: 11px; padding: 11px 13px;
-  color: #f4f4f5; font: 13.5px/1.35 system-ui, -apple-system, sans-serif;
-  border: 1px solid rgba(255,255,255,0.13);
-  box-shadow: 0 8px 24px rgba(0,0,0,0.48);
-  cursor: grab; user-select: none; -webkit-user-select: none;
+  position: fixed;
+  left: 1rem;
+  bottom: 8.25rem;
+  top: auto;
+  z-index: 2147483640;
+  width: 21.5rem;
+  border-radius: var(--radius-md, 0.5rem);
+  padding: 0.55rem 0.7rem;
+  background-color: var(--overlay-4, rgba(0, 0, 0, 0.53));
+  color: #fff;
+  font-family: var(--font, "Overpass", system-ui, -apple-system, sans-serif);
+  font-size: 0.85rem;
+  line-height: 1.3;
+  text-shadow: var(--hud-text-shadow, 1px 1px 2px var(--overlay-4, rgba(0, 0, 0, 0.5)));
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
   box-sizing: border-box;
 }
 .tr-cl:active { cursor: grabbing; }
-.tr-cl.compact { width: auto; min-width: 244px; max-width: 344px; padding: 9px 12px; }
-.tr-cl-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.tr-cl-head-l { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.tr-cl.compact { width: auto; min-width: 15.5rem; max-width: 22rem; padding: 0.45rem 0.65rem; }
+
+/* Docked inside Biketerra's .panel-profile.bg-dark (shares its native glass surface seamlessly) */
+.tr-cl.tr-cl-docked {
+  position: relative;
+  left: auto;
+  right: auto;
+  top: auto;
+  bottom: auto;
+  z-index: auto;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  border-radius: 0;
+  padding: 0.35rem 0.6rem 0.4rem;
+  background: transparent;
+  border-bottom: 1px solid var(--white-1, rgba(255, 255, 255, 0.1));
+  cursor: default;
+}
+.tr-cl.tr-cl-docked:active { cursor: default; }
+.tr-cl.tr-cl-docked.compact {
+  width: 100%;
+  max-width: none;
+  padding: 0.3rem 0.6rem;
+}
+
+.tr-cl-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
+}
+.tr-cl-head-l {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
 .tr-cl-badge {
-  font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase;
-  padding: 2px 7px; border-radius: 4px; background: #ff6b57; color: #fff; flex-shrink: 0;
+  font-family: var(--font-mono, "Overpass Mono", monospace);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 0.12rem 0.4rem;
+  border-radius: var(--radius-sm, 0.25rem);
+  background: var(--bt-a, #ff6262);
+  color: #fff;
+  text-shadow: none;
+  flex-shrink: 0;
 }
-.tr-cl-badge.approach { background: #d97706; color: #fff; }
-.tr-cl-badge.flat { background: #27272a; color: #a1a1aa; }
+.tr-cl-badge.approach {
+  background: color-mix(in oklab, var(--bt-8, #ffa574) 85%, #000);
+  color: #111;
+}
+.tr-cl-badge.flat {
+  background: var(--white-1, rgba(255, 255, 255, 0.1));
+  color: var(--white-4, rgba(255, 255, 255, 0.8));
+}
 .tr-cl-title {
-  font-weight: 700; font-size: 13.5px; color: #f4f4f5;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-weight: 700;
+  font-size: 0.82rem;
+  color: #fff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.tr-cl-head-r { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.tr-cl-head-r {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+  margin-left: auto;
+}
 .tr-cl-grade {
-  font-size: 13.5px; font-weight: 800; font-variant-numeric: tabular-nums;
-  padding: 2px 8px; border-radius: 999px; background: #27272a; color: #f4f4f5;
-  border: 1px solid rgba(255,255,255,0.12);
+  font-family: var(--font-mono, "Overpass Mono", monospace);
+  font-size: 0.85rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 0.08rem 0.42rem;
+  border-radius: var(--radius-sm, 0.25rem);
+  background: var(--overlay-2, rgba(0, 0, 0, 0.3));
+  color: #fff;
+  border: 1px solid transparent;
 }
 .tr-cl-list-btn {
-  border: 1px solid rgba(255,255,255,0.16); background: rgba(255,255,255,0.06);
-  color: #e4e4e7; border-radius: 5px; padding: 2px 7px; font: inherit; font-size: 11.5px;
-  font-weight: 700; cursor: pointer;
+  border: 0;
+  background: var(--white-1, rgba(255, 255, 255, 0.09));
+  color: var(--white-4, rgba(255, 255, 255, 0.8));
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.16rem 0.45rem;
+  font-family: inherit;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
 }
-.tr-cl-list-btn:hover { background: rgba(255,255,255,0.14); color: #fff; }
-.tr-cl-list-btn.open { border-color: #ff6b57; color: #ff8a7a; }
+.tr-cl-list-btn:hover { background: var(--white-2, rgba(255, 255, 255, 0.22)); color: #fff; }
+.tr-cl-list-btn.open { background: var(--white-2, rgba(255, 255, 255, 0.24)); color: #fff; }
+
 .tr-cl-zoom-btn {
-  border: 1px solid rgba(255,255,255,0.16); background: rgba(255,255,255,0.06);
-  color: #e4e4e7; border-radius: 5px; padding: 2px 6px; min-width: 26px; height: 22px;
-  display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+  border: 0;
+  background: var(--white-1, rgba(255, 255, 255, 0.09));
+  color: var(--white-4, rgba(255, 255, 255, 0.8));
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.14rem 0.35rem;
+  min-width: 1.5rem;
+  height: 1.35rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
 }
-.tr-cl-zoom-btn:hover { background: rgba(255,255,255,0.14); color: #fff; }
-.tr-cl-zoom-btn.full { border-color: #60a5fa; color: #93c5fd; background: rgba(96, 165, 250, 0.14); }
-.tr-cl-zoom-btn svg { width: 13px; height: 13px; display: block; pointer-events: none; }
+.tr-cl-zoom-btn:hover { background: var(--white-2, rgba(255, 255, 255, 0.22)); color: #fff; }
+.tr-cl-zoom-btn.full { background: var(--white-2, rgba(255, 255, 255, 0.24)); color: var(--success, #6dd44d); }
+.tr-cl-zoom-btn svg { width: 0.8rem; height: 0.8rem; display: block; pointer-events: none; }
 .tr-elev-graph-interactive { cursor: pointer; }
 
+/* Inline Biketerra Rider-Stat KPI strip (horizontal in docked bar, 3-col grid in floating/preview) */
 .tr-cl-kpis {
-  display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 8px 0 7px;
+  display: flex;
+  align-items: baseline;
+  gap: 0.85rem;
+  flex-wrap: wrap;
 }
 .tr-cl-kpi {
-  background: rgba(255,255,255,0.045); border-radius: 7px; padding: 5px 8px;
-  border: 1px solid rgba(255,255,255,0.06);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.28rem;
+  white-space: nowrap;
 }
-.tr-cl-kpi-lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: #9ca3af; }
-.tr-cl-kpi-val { font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums; color: #fff; margin-top: 1px; }
+.tr-cl-kpi-val {
+  font-family: var(--font-mono, "Overpass Mono", monospace);
+  font-size: 0.95rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  color: #fff;
+}
+.tr-cl-kpi-lbl {
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: var(--white-4, rgba(255, 255, 255, 0.75));
+}
 
+.tr-cl:not(.tr-cl-docked) .tr-cl-kpis {
+  order: 3;
+  flex-basis: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.35rem;
+  margin-top: 0.25rem;
+}
+.tr-cl:not(.tr-cl-docked) .tr-cl-kpi {
+  flex-direction: column-reverse;
+  gap: 0.08rem;
+  background: var(--overlay-2, rgba(0, 0, 0, 0.28));
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.3rem 0.45rem;
+}
+.tr-cl:not(.tr-cl-docked) .tr-cl-kpi-lbl {
+  font-size: 0.64rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--white-3, rgba(255, 255, 255, 0.58));
+}
+.tr-cl:not(.tr-cl-docked) .tr-cl-kpi-val {
+  font-size: 1.05rem;
+}
+
+/* 500m Karoo color-block ticker strip */
+.tr-cl-body {
+  margin-top: 0.35rem;
+}
 .tr-cl-scroller-lbl {
-  display: flex; justify-content: space-between; font-size: 10.5px; color: #9ca3af;
-  text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.65rem;
+  color: var(--white-3, rgba(255, 255, 255, 0.58));
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.2rem;
+}
+.tr-cl.tr-cl-docked .tr-cl-scroller-lbl {
+  display: none;
 }
 .tr-cl-ticker-canvas {
-  display: block; width: 100%; height: 42px; border-radius: 6px;
-  background: #101116; border: 1px solid rgba(255,255,255,0.09);
+  display: block;
+  width: 100%;
+  height: 2.2rem;
+  border-radius: var(--radius-sm, 0.25rem);
+  background: var(--overlay-2, rgba(0, 0, 0, 0.28));
+}
+.tr-cl.tr-cl-docked .tr-cl-ticker-canvas {
+  height: 1.55rem;
 }
 
+/* Flat-road compact summary */
 .tr-cl-compact-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 5px;
-  font-size: 12.5px; color: #cbd5e1; font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-top: 0.28rem;
+  font-size: 0.78rem;
+  color: var(--white-4, rgba(255, 255, 255, 0.8));
+  font-variant-numeric: tabular-nums;
+}
+.tr-cl-compact-row strong {
+  color: #fff;
+  font-weight: 700;
+}
+.tr-cl.tr-cl-docked .tr-cl-compact-row {
+  margin-top: 0;
+  gap: 0.55rem;
+  font-size: 0.76rem;
+  white-space: nowrap;
 }
 
+/* Climb list drawer */
 .tr-cl-drawer {
-  margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 7px;
-  max-height: 175px; overflow-y: auto; display: flex; flex-direction: column; gap: 5px;
+  margin-bottom: 0.45rem;
+  border-bottom: 1px solid var(--white-1, rgba(255, 255, 255, 0.1));
+  padding-bottom: 0.4rem;
+  max-height: 9.5rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
 }
 .tr-cl-item {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 5px 8px; border-radius: 6px; background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.06); cursor: pointer; font-size: 12.5px;
-  font-variant-numeric: tabular-nums; text-align: left; color: #e4e4e7;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.28rem 0.5rem;
+  border-radius: var(--radius-sm, 0.25rem);
+  background: var(--overlay-2, rgba(0, 0, 0, 0.26));
+  border: 0;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  color: var(--white-4, rgba(255, 255, 255, 0.85));
 }
-.tr-cl-item:hover { background: rgba(255,255,255,0.09); }
-.tr-cl-item.active { border-color: #ff6b57; background: rgba(255, 107, 87, 0.14); }
-.tr-cl-item.done { opacity: 0.52; }
-.tr-cl-item.selected { outline: 1px solid #60a5fa; }
+.tr-cl-item:hover { background: var(--white-1, rgba(255, 255, 255, 0.12)); color: #fff; }
+.tr-cl-item.active { box-shadow: inset 2px 0 0 var(--bt-a, #ff6262); background: color-mix(in oklab, var(--bt-a, #ff6262) 14%, var(--overlay-2, rgba(0, 0, 0, 0.26))); color: #fff; }
+.tr-cl-item.done { opacity: 0.5; }
+.tr-cl-item.selected { box-shadow: inset 2px 0 0 var(--success, #6dd44d); background: var(--white-1, rgba(255, 255, 255, 0.14)); color: #fff; }
 .tr-cl-item-l { font-weight: 700; white-space: nowrap; }
-.tr-cl-item-r { color: #a1a1aa; font-size: 11.5px; white-space: nowrap; }
+.tr-cl-item-r { font-family: var(--font-mono, "Overpass Mono", monospace); color: var(--white-3, rgba(255, 255, 255, 0.65)); font-size: 0.72rem; white-space: nowrap; }
 
 .tr-cl.preview { position: static; cursor: default; max-width: 100%; }
 
@@ -192,6 +396,12 @@ svg.tr-elev-zoomed line {
           '<span class="tr-cl-badge flat">CLIMBER</span>' +
           '<span class="tr-cl-title">Waiting for route\u2026</span>' +
         '</div>' +
+        '<div class="tr-cl-kpis" style="display:none">' +
+          '<div class="tr-cl-kpi"><span class="tr-cl-kpi-val tr-k1-v">\u2014</span><span class="tr-cl-kpi-lbl tr-k1-l">left</span></div>' +
+          '<div class="tr-cl-kpi"><span class="tr-cl-kpi-val tr-k2-v">\u2014</span><span class="tr-cl-kpi-lbl tr-k2-l">elev</span></div>' +
+          '<div class="tr-cl-kpi"><span class="tr-cl-kpi-val tr-k3-v">\u2014</span><span class="tr-cl-kpi-lbl tr-k3-l">avg</span></div>' +
+        '</div>' +
+        '<div class="tr-cl-compact-row" style="display:none"></div>' +
         '<div class="tr-cl-head-r">' +
           '<span class="tr-cl-grade">\u2014%</span>' +
           '<button type="button" class="tr-cl-zoom-btn" style="display:none" title="Zoom out to full route"></button>' +
@@ -199,17 +409,11 @@ svg.tr-elev-zoomed line {
         '</div>' +
       '</div>' +
       '<div class="tr-cl-body">' +
-        '<div class="tr-cl-kpis">' +
-          '<div class="tr-cl-kpi"><div class="tr-cl-kpi-lbl tr-k1-l">Dist Left</div><div class="tr-cl-kpi-val tr-k1-v">\u2014</div></div>' +
-          '<div class="tr-cl-kpi"><div class="tr-cl-kpi-lbl tr-k2-l">Elev Left</div><div class="tr-cl-kpi-val tr-k2-v">\u2014</div></div>' +
-          '<div class="tr-cl-kpi"><div class="tr-cl-kpi-lbl tr-k3-l">Avg</div><div class="tr-cl-kpi-val tr-k3-v">\u2014</div></div>' +
-        '</div>' +
         '<div class="tr-cl-scroller-wrap">' +
           '<div class="tr-cl-scroller-lbl"><span class="tr-cl-sc-title">Next 500 m</span><span class="tr-cl-sc-end">100 m steps</span></div>' +
-          '<canvas class="tr-cl-ticker-canvas" width="318" height="42"></canvas>' +
+          '<canvas class="tr-cl-ticker-canvas" width="318" height="36"></canvas>' +
         '</div>' +
-      '</div>' +
-      '<div class="tr-cl-compact-row" style="display:none"></div>';
+      '</div>';
     return {
       root,
       badge: root.querySelector('.tr-cl-badge'),
@@ -217,6 +421,7 @@ svg.tr-elev-zoomed line {
       grade: root.querySelector('.tr-cl-grade'),
       zoomBtn: root.querySelector('.tr-cl-zoom-btn'),
       listBtn: root.querySelector('.tr-cl-list-btn'),
+      kpis: root.querySelector('.tr-cl-kpis'),
       body: root.querySelector('.tr-cl-body'),
       k1l: root.querySelector('.tr-k1-l'), k1v: root.querySelector('.tr-k1-v'),
       k2l: root.querySelector('.tr-k2-l'), k2v: root.querySelector('.tr-k2-v'),
@@ -232,6 +437,75 @@ svg.tr-elev-zoomed line {
   const ui = buildCard(false);
   document.body.appendChild(ui.root);
 
+  let savedFloatPos = null;
+
+  function applyFloatingPos() {
+    if (!savedFloatPos || !Number.isFinite(savedFloatPos.x)) return;
+    const w = ui.root.offsetWidth || 344;
+    const h = ui.root.offsetHeight || 160;
+    ui.root.style.left = clamp(savedFloatPos.x, 0, Math.max(0, window.innerWidth - w)) + 'px';
+    if (Number.isFinite(savedFloatPos.bottom)) {
+      ui.root.style.top = 'auto';
+      ui.root.style.bottom = clamp(savedFloatPos.bottom, 0, Math.max(0, window.innerHeight - h)) + 'px';
+    } else if (Number.isFinite(savedFloatPos.y)) {
+      const estH = Math.max(h, 160);
+      const bottom = Math.max(12, window.innerHeight - savedFloatPos.y - estH);
+      ui.root.style.top = 'auto';
+      ui.root.style.bottom = clamp(bottom, 0, Math.max(0, window.innerHeight - estH)) + 'px';
+    }
+  }
+
+  function findElevationPanelHost() {
+    if (typeof document.querySelector !== 'function') return null;
+    const elevGraph = document.querySelector('.panel-profile .elev-graph');
+    if (!elevGraph) return null;
+    return (elevGraph.closest && elevGraph.closest('.panel-profile')) || elevGraph.parentElement || null;
+  }
+
+  function undockFromProfile() {
+    if (dockedPanel) {
+      try { dockedPanel.classList.remove('tr-cl-profile-host'); } catch {}
+      dockedPanel = null;
+    }
+    if (ui.root.classList.contains('tr-cl-docked')) {
+      ui.root.classList.remove('tr-cl-docked');
+    }
+    if (ui.root.parentNode !== document.body && document.body) {
+      document.body.appendChild(ui.root);
+    }
+    applyBoxStyle();
+    applyFloatingPos();
+  }
+
+  function syncDock() {
+    if (cleaned) return false;
+    const hostPanel = findElevationPanelHost();
+    if (hostPanel) {
+      if (dockedPanel && dockedPanel !== hostPanel) {
+        try { dockedPanel.classList.remove('tr-cl-profile-host'); } catch {}
+      }
+      dockedPanel = hostPanel;
+      hostPanel.classList.add('tr-cl-profile-host');
+      if (!ui.root.classList.contains('tr-cl-docked')) {
+        ui.root.classList.add('tr-cl-docked');
+        ui.root.style.left = '';
+        ui.root.style.top = '';
+        ui.root.style.bottom = '';
+        ui.root.style.background = '';
+      }
+      if (ui.root.parentNode !== hostPanel) {
+        if (typeof hostPanel.insertBefore === 'function') {
+          hostPanel.insertBefore(ui.root, hostPanel.firstChild || null);
+        } else {
+          hostPanel.appendChild(ui.root);
+        }
+      }
+      return true;
+    }
+    undockFromProfile();
+    return false;
+  }
+
   function toggleManualFullZoom() {
     if (!canToggleZoom) return;
     zoomManualFull = !zoomManualFull;
@@ -242,7 +516,7 @@ svg.tr-elev-zoomed line {
     if (!graph || boundGraphs.has(graph) || typeof graph.addEventListener !== 'function') return;
     boundGraphs.add(graph);
     const onClick = (e) => {
-      if (!canToggleZoom || (e.target && e.target.closest && e.target.closest('button, a'))) return;
+      if (!canToggleZoom || (e.target && e.target.closest && e.target.closest('button, a, .tr-cl'))) return;
       e.preventDefault();
       e.stopPropagation();
       if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
@@ -271,33 +545,28 @@ svg.tr-elev-zoomed line {
   });
 
   function applyBoxStyle() {
+    if (ui.root.classList.contains('tr-cl-docked')) {
+      ui.root.style.background = '';
+      return;
+    }
     const op = clamp(S.opacity, 30, 100) / 100;
-    ui.root.style.background = `rgba(21, 21, 26, ${op.toFixed(2)})`;
+    ui.root.style.background = `rgba(0, 0, 0, ${(op * 0.65).toFixed(2)})`;
   }
 
-  // Draggable persistence (bottom-anchored so the card expands upward)
+  // Draggable persistence (only active in floating fallback when .panel-profile is absent)
   (async () => {
     try {
       const pos = await terra.storage.get('pos', null);
       if (pos && Number.isFinite(pos.x)) {
-        const w = ui.root.offsetWidth || 344;
-        const h = ui.root.offsetHeight || 180;
-        ui.root.style.left = clamp(pos.x, 0, Math.max(0, window.innerWidth - w)) + 'px';
-        if (Number.isFinite(pos.bottom)) {
-          ui.root.style.top = 'auto';
-          ui.root.style.bottom = clamp(pos.bottom, 0, Math.max(0, window.innerHeight - h)) + 'px';
-        } else if (Number.isFinite(pos.y)) {
-          const estH = Math.max(h, 185);
-          const bottom = Math.max(12, window.innerHeight - pos.y - estH);
-          ui.root.style.top = 'auto';
-          ui.root.style.bottom = clamp(bottom, 0, Math.max(0, window.innerHeight - estH)) + 'px';
-        }
+        savedFloatPos = pos;
+        if (!ui.root.classList.contains('tr-cl-docked')) applyFloatingPos();
       }
     } catch {}
   })();
 
   let dragging = null;
   ui.root.addEventListener('pointerdown', (e) => {
+    if (ui.root.classList.contains('tr-cl-docked')) return;
     if (e.button !== 0 || e.target.closest('button, .tr-cl-item')) return;
     const r = ui.root.getBoundingClientRect();
     dragging = {
@@ -327,10 +596,11 @@ svg.tr-elev-zoomed line {
     dragging = null;
     if (moved) {
       const r = ui.root.getBoundingClientRect();
-      terra.storage.set('pos', {
+      savedFloatPos = {
         x: Math.round(r.left),
         bottom: Math.round(window.innerHeight - r.bottom),
-      }).catch(() => {});
+      };
+      terra.storage.set('pos', savedFloatPos).catch(() => {});
     }
   };
   ui.root.addEventListener('pointerup', endDrag);
@@ -1290,15 +1560,23 @@ svg.tr-elev-zoomed line {
     return `${Math.round(m)} m`;
   }
 
-  // Smooth canvas-based 500m Karoo ticker with fixed segment colors & readable labels
+  // Smooth DPI-aware canvas-based 500m Karoo ticker with fixed segment colors & readable labels
   function renderTickerCanvas(canvas, scTitle, scEnd, climb, distIntoClimb) {
     const unitTag = isImp() ? 'yd' : 'm';
     scTitle.textContent = `Next ${500}${unitTag}`;
     scEnd.textContent = `100${unitTag} fixed`;
 
-    const w = canvas.width;
-    const h = canvas.height;
+    const dpr = Math.min((typeof window !== 'undefined' && window.devicePixelRatio > 0) ? window.devicePixelRatio : 1, 2);
+    const w = (canvas.clientWidth && canvas.clientWidth > 20) ? canvas.clientWidth : 318;
+    const h = (canvas.clientHeight && canvas.clientHeight > 10) ? canvas.clientHeight : 32;
+    const pw = Math.round(w * dpr);
+    const ph = Math.round(h * dpr);
+    if (canvas.width !== pw) canvas.width = pw;
+    if (canvas.height !== ph) canvas.height = ph;
+
     const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    if (typeof ctx.setTransform === 'function') ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
     if (!climb || !climb.segments || !climb.segments.length) return;
 
@@ -1306,6 +1584,9 @@ svg.tr-elev-zoomed line {
     const winSpan = 5 * segM;
     const winStart = distIntoClimb !== null && distIntoClimb > 0 ? clamp(distIntoClimb, 0, climb.lengthM) : 0;
     const winEnd = winStart + winSpan;
+    const compactBar = h < 30;
+    const pctPx = Math.max(10, Math.round(h * (compactBar ? 0.50 : 0.36)));
+    const distPx = Math.max(9, Math.round(h * (compactBar ? 0.40 : 0.27)));
 
     for (const seg of climb.segments) {
       const s0 = seg.offsetM;
@@ -1321,24 +1602,34 @@ svg.tr-elev-zoomed line {
       ctx.fillStyle = seg.color;
       ctx.fillRect(x0, 0, bw, h);
 
-      // Separator between segments
+      // Clean separator between segments
       if (x1 < w - 0.5) {
-        ctx.fillStyle = '#15151a';
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
         ctx.fillRect(x1 - 1.5, 0, 1.5, h);
       }
 
       // Draw fixed grade % centered inside the visible portion so it never slices in half
       if (bw >= 24) {
         const cx = x0 + bw / 2;
+        const pctTxt = `${Math.round(seg.grade)}%`;
+        const mark = Math.round(((seg.offsetM + seg.lenM) / segM) * 100);
         ctx.fillStyle = '#09090b';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.font = '800 13px system-ui, -apple-system, sans-serif';
-        ctx.fillText(`${Math.round(seg.grade)}%`, cx, h * 0.40);
-        if (bw >= 32) {
-          ctx.font = '700 10px system-ui, -apple-system, sans-serif';
-          const mark = Math.round(((seg.offsetM + seg.lenM) / segM) * 100);
-          ctx.fillText(`${mark}${unitTag}`, cx, h * 0.77);
+        if (compactBar) {
+          ctx.font = `700 ${pctPx}px "Overpass Mono", "Overpass", sans-serif`;
+          if (bw >= 72) {
+            ctx.fillText(`${pctTxt} \u00b7 ${mark}${unitTag}`, cx, h * 0.52);
+          } else {
+            ctx.fillText(pctTxt, cx, h * 0.52);
+          }
+        } else {
+          ctx.font = `700 ${pctPx}px "Overpass Mono", "Overpass", sans-serif`;
+          ctx.fillText(pctTxt, cx, h * 0.38);
+          if (bw >= 34) {
+            ctx.font = `600 ${distPx}px "Overpass Mono", "Overpass", sans-serif`;
+            ctx.fillText(`${mark}${unitTag}`, cx, h * 0.76);
+          }
         }
       }
     }
@@ -1351,14 +1642,14 @@ svg.tr-elev-zoomed line {
   function setGradePill(el, g) {
     if (g === null || g === undefined || !Number.isFinite(g)) {
       el.textContent = '\u2014%';
-      el.style.color = '#f4f4f5';
-      el.style.borderColor = 'rgba(255,255,255,0.12)';
+      el.style.color = '#fff';
+      el.style.borderColor = 'transparent';
       return;
     }
     el.textContent = `${g >= 0 ? '+' : ''}${g.toFixed(1)}%`;
     const col = karooGradeColor(g);
     el.style.color = col;
-    el.style.borderColor = col;
+    el.style.borderColor = `color-mix(in oklab, ${col} 50%, transparent)`;
   }
 
   function renderDrawerList(els, items, activeClimb) {
@@ -1404,6 +1695,7 @@ svg.tr-elev-zoomed line {
       setGradePill(els.grade, null);
       els.zoomBtn.style.display = 'none';
       els.listBtn.style.display = 'none';
+      els.kpis.style.display = 'none';
       els.body.style.display = 'none';
       els.compactRow.style.display = 'none';
       els.drawer.style.display = 'none';
@@ -1485,6 +1777,7 @@ svg.tr-elev-zoomed line {
       if (S.flat_mode === 'compact') {
         els.root.style.display = '';
         els.root.classList.add('compact');
+        els.kpis.style.display = 'none';
         els.body.style.display = 'none';
         els.drawer.style.display = 'none';
         els.compactRow.style.display = 'flex';
@@ -1511,43 +1804,45 @@ svg.tr-elev-zoomed line {
       els.badge.className = 'tr-cl-badge flat';
       els.badge.textContent = 'CLIMBER';
       els.title.textContent = totalClimbs ? 'All Climbs Completed' : 'No Climbs Detected';
+      els.kpis.style.display = 'none';
       els.body.style.display = 'none';
       renderDrawerList(els, view.allItems || [], null);
       return;
     }
 
+    els.kpis.style.display = '';
     els.body.style.display = '';
     if (inspected && inspected.climb !== view.activeClimb) {
       els.badge.className = 'tr-cl-badge approach';
       els.badge.textContent = `#${showClimb.index}/${showClimb.totalClimbs}`;
-      els.title.textContent = inspected.done ? 'Completed Climb' : `In ${fmtDist(inspected.distToStart)}`;
-      els.k1l.textContent = inspected.done ? 'Length' : 'To Start';
+      els.title.textContent = inspected.done ? 'Completed' : `In ${fmtDist(inspected.distToStart)}`;
+      els.k1l.textContent = inspected.done ? 'len' : 'to start';
       els.k1v.textContent = inspected.done ? fmtDist(showClimb.lengthM) : fmtDist(inspected.distToStart);
-      els.k2l.textContent = 'Ascent';
+      els.k2l.textContent = 'ascent';
       els.k2v.textContent = `+${fmtElev(showClimb.ascentM)}`;
-      els.k3l.textContent = 'Avg';
+      els.k3l.textContent = 'avg';
       els.k3v.textContent = `${showClimb.avgGrade.toFixed(1)}%`;
       renderTickerCanvas(els.tickerCanvas, els.scTitle, els.scEnd, showClimb, 0);
     } else if (view.mode === 'active') {
       els.badge.className = 'tr-cl-badge';
       els.badge.textContent = `CLIMB ${showClimb.index}/${showClimb.totalClimbs}`;
-      els.title.textContent = `${Math.round(view.progressFrac * 100)}% done`;
-      els.k1l.textContent = 'Dist Left';
+      els.title.textContent = `${Math.round(view.progressFrac * 100)}%`;
+      els.k1l.textContent = 'left';
       els.k1v.textContent = fmtDist(view.distLeft);
-      els.k2l.textContent = 'Elev Left';
+      els.k2l.textContent = 'elev';
       els.k2v.textContent = `+${fmtElev(view.ascentLeft)}`;
-      els.k3l.textContent = 'Avg Grade';
+      els.k3l.textContent = 'avg';
       els.k3v.textContent = `${showClimb.avgGrade.toFixed(1)}%`;
       renderTickerCanvas(els.tickerCanvas, els.scTitle, els.scEnd, showClimb, view.distIntoClimb);
     } else {
       els.badge.className = 'tr-cl-badge approach';
       els.badge.textContent = `NEXT ${showClimb.index}/${showClimb.totalClimbs}`;
-      els.title.textContent = `Starts in ${fmtDist(view.distToStart)}`;
-      els.k1l.textContent = 'To Start';
+      els.title.textContent = `In ${fmtDist(view.distToStart)}`;
+      els.k1l.textContent = 'to start';
       els.k1v.textContent = fmtDist(view.distToStart);
-      els.k2l.textContent = 'Length';
+      els.k2l.textContent = 'len';
       els.k2v.textContent = fmtDist(showClimb.lengthM);
-      els.k3l.textContent = 'Avg';
+      els.k3l.textContent = 'avg';
       els.k3v.textContent = `${showClimb.avgGrade.toFixed(1)}%`;
       renderTickerCanvas(els.tickerCanvas, els.scTitle, els.scEnd, showClimb, 0);
     }
@@ -1587,7 +1882,7 @@ svg.tr-elev-zoomed line {
     terra.settings.preview((slot) => {
       if (!slot) return;
       const pv = buildCard(true);
-      pv.root.style.background = `rgba(21, 21, 26, ${(clamp(S.opacity, 30, 100) / 100).toFixed(2)})`;
+      pv.root.style.background = `rgba(0, 0, 0, ${(clamp(S.opacity, 30, 100) / 100 * 0.65).toFixed(2)})`;
       slot.appendChild(pv.root);
       renderView(pv, makeSampleView(), true);
     });
@@ -1603,6 +1898,7 @@ svg.tr-elev-zoomed line {
 
   function tick() {
     if (cleaned) return;
+    syncDock();
     const resolved = resolveRoute();
     if (!resolved) {
       renderView(ui, null);
@@ -1692,6 +1988,10 @@ svg.tr-elev-zoomed line {
     for (const off of graphClickCleanups) { try { off(); } catch {} }
     graphClickCleanups.length = 0;
     restoreElevationSvg(true);
+    if (dockedPanel) {
+      try { dockedPanel.classList.remove('tr-cl-profile-host'); } catch {}
+      dockedPanel = null;
+    }
     if (ui.root.parentNode) ui.root.remove();
   });
 
