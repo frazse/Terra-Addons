@@ -65,6 +65,8 @@ nativeGearEl: null
   // --- 0. DETECT BIKETERRA "ERG Xw" AND "Gear X" DOM ELEMENTS ---
   const GEAR_REGEX = /^\s*Gear\s+\d+\s*$/i;
   const ERG_REGEX = /\bERG\s+\d+\s*w\b/i;
+  const ROAD_ERG_REGEX = /^\s*\d+\s*W\s*$/i;
+  let isScanningDom = false;
 
   function isElementVisible(el) {
     if (!el || !el.isConnected) return false;
@@ -72,6 +74,17 @@ nativeGearEl: null
     if (r.width === 0 || r.height === 0) return false;
     const cs = getComputedStyle(el);
     return cs.display !== 'none' && cs.visibility !== 'hidden';
+  }
+
+  function isAncestorChainShown(el) {
+    if (!el || !el.isConnected) return false;
+    let cur = el;
+    while (cur && cur.nodeType === 1) {
+      const cs = getComputedStyle(cur);
+      if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+      cur = cur.parentElement;
+    }
+    return true;
   }
 
   function restoreHiddenGearElements(exceptEl = null) {
@@ -84,113 +97,179 @@ nativeGearEl: null
     });
   }
 
+  function hideGearHud() {
+    if (!hudEl) return;
+    if (hudEl.style.display !== 'none') hudEl.style.display = 'none';
+    if (hudEl.parentElement !== document.body && document.body) {
+      document.body.appendChild(hudEl);
+    }
+    hudEl.classList.remove('tg-in-flow');
+  }
+
   function scanBiketerraDom() {
-    if (!location.pathname.includes('/ride')) {
-      state.isErgMode = false;
-      state.ergText = '';
-      state.nativeGearEl = null;
-      restoreHiddenGearElements();
-      if (hudEl) hudEl.style.display = 'none';
-      return;
-    }
+    if (isScanningDom) return;
+    isScanningDom = true;
+    try {
+      if (!location.pathname.includes('/ride')) {
+        state.isErgMode = false;
+        state.ergText = '';
+        state.nativeGearEl = null;
+        restoreHiddenGearElements();
+        hideGearHud();
+        return;
+      }
 
-    let foundErg = false;
-    let foundErgText = '';
-    let foundGearEl = null;
+      let foundErg = false;
+      let foundErgText = '';
+      let foundGearEl = null;
 
-    const walker = document.createTreeWalker(
-      document.body,
-      NodeFilter.SHOW_TEXT,
-      {
-        acceptNode(node) {
-          const p = node.parentElement;
-          if (!p) return NodeFilter.FILTER_REJECT;
-          const tag = p.tagName;
-          if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') return NodeFilter.FILTER_REJECT;
-          if (p.closest('#terra-gear-hud, #btz-panel')) return NodeFilter.FILTER_REJECT;
-          return NodeFilter.FILTER_ACCEPT;
+      // Fast path: Biketerra's native `.road-readout` inside `.road-middle`
+      const roadReadout =
+        document.querySelector('.road-middle .road-readout') ||
+        document.querySelector('.road-readout');
+      if (roadReadout) {
+        const readoutActive =
+          roadReadout.dataset.terraHiddenGear === '1'
+            ? isAncestorChainShown(roadReadout.parentElement)
+            : isElementVisible(roadReadout);
+        if (readoutActive) {
+          const labelEl = roadReadout.querySelector('.readout-label');
+          const labelTxt = ((labelEl ? labelEl.textContent : roadReadout.textContent) || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (GEAR_REGEX.test(labelTxt)) {
+            foundGearEl = roadReadout;
+          } else if (
+            ERG_REGEX.test(labelTxt) ||
+            ROAD_ERG_REGEX.test(labelTxt) ||
+            (labelEl && /target power/i.test(labelEl.getAttribute('title') || ''))
+          ) {
+            foundErg = true;
+            foundErgText = labelTxt.toUpperCase();
+          }
         }
       }
-    );
 
-    let n;
-    while ((n = walker.nextNode())) {
-      const txt = n.nodeValue.trim();
-      if (!txt || txt.length > 40) continue;
+      // Fallback scan for older/custom layouts if `.road-readout` didn't resolve Gear or ERG
+      if (!foundGearEl && !foundErg) {
+        const walker = document.createTreeWalker(
+          document.body,
+          NodeFilter.SHOW_TEXT,
+          {
+            acceptNode(node) {
+              const p = node.parentElement;
+              if (!p) return NodeFilter.FILTER_REJECT;
+              const tag = p.tagName;
+              if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') return NodeFilter.FILTER_REJECT;
+              if (p.closest('#terra-gear-hud, #btz-panel')) return NodeFilter.FILTER_REJECT;
+              return NodeFilter.FILTER_ACCEPT;
+            }
+          }
+        );
 
-      if (!foundGearEl && GEAR_REGEX.test(txt)) {
-        const el = n.parentElement;
-        if (isElementVisible(el)) foundGearEl = el;
-      }
+        let n;
+        while ((n = walker.nextNode())) {
+          const txt = n.nodeValue.trim();
+          if (!txt || txt.length > 40) continue;
 
-      if (!foundErg && ERG_REGEX.test(txt)) {
-        const el = n.parentElement;
-        if (isElementVisible(el)) {
-          foundErg = true;
-          foundErgText = txt.match(ERG_REGEX)[0].toUpperCase();
+          if (!foundGearEl && GEAR_REGEX.test(txt)) {
+            const el = n.parentElement;
+            if (el.dataset.terraHiddenGear === '1' || el.closest('[data-terra-hidden-gear="1"]') || isElementVisible(el)) {
+              foundGearEl = el;
+            }
+          }
+
+          if (!foundErg && ERG_REGEX.test(txt)) {
+            const el = n.parentElement;
+            if (isElementVisible(el)) {
+              foundErg = true;
+              foundErgText = txt.match(ERG_REGEX)[0].toUpperCase();
+            }
+          }
+        }
+
+        // Split-span fallback
+        if (!foundErg && !foundGearEl) {
+          const candidates = document.querySelectorAll('div, span, button, p');
+          for (let i = 0; i < candidates.length; i++) {
+            const el = candidates[i];
+            if (el.children.length > 4 || el.closest('#terra-gear-hud, #btz-panel')) continue;
+            const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+            if (!t || t.length > 24) continue;
+
+            if (!foundErg && ERG_REGEX.test(t) && isElementVisible(el)) {
+              foundErg = true;
+              foundErgText = t.match(ERG_REGEX)[0].toUpperCase();
+            }
+            if (!foundGearEl && GEAR_REGEX.test(t) && (el.dataset.terraHiddenGear === '1' || isElementVisible(el))) {
+              foundGearEl = el;
+            }
+          }
         }
       }
-    }
 
-    // Fallback check in case "Gear" + number or "ERG" + watts are split across child spans
-    if (!foundErg || !foundGearEl) {
-      const candidates = document.querySelectorAll('div, span, button, p');
-      for (let i = 0; i < candidates.length; i++) {
-        const el = candidates[i];
-        if (el.children.length > 4 || el.closest('#terra-gear-hud, #btz-panel')) continue;
-        const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
-        if (!t || t.length > 24) continue;
+      // Replace Biketerra's virtual shifting indicator in-flow inside `.road-middle`
+      // so `.lap-counter` (and `.step-readout`) stack cleanly above our HUD instead of being covered.
+      if (foundGearEl && !foundErg) {
+        const targetBox = foundGearEl.closest('.road-readout, .gear-indicator, .virtual-gear') || foundGearEl;
+        const roadMiddle = targetBox.closest('.road-middle');
+        state.nativeGearEl = targetBox;
+        restoreHiddenGearElements(targetBox);
 
-        if (!foundErg && ERG_REGEX.test(t) && isElementVisible(el)) {
-          foundErg = true;
-          foundErgText = t.match(ERG_REGEX)[0].toUpperCase();
+        if (roadMiddle) {
+          if (targetBox.dataset.terraHiddenGear !== '1') {
+            targetBox.dataset.terraHiddenGear = '1';
+          }
+          if (hudEl) {
+            if (hudEl.parentElement !== roadMiddle) {
+              roadMiddle.appendChild(hudEl);
+            }
+            hudEl.classList.add('tg-in-flow');
+            hudEl.style.top = '';
+            hudEl.style.right = '';
+            hudEl.style.bottom = '';
+            hudEl.style.left = '';
+            if (hudEl.style.display !== 'block') hudEl.style.display = 'block';
+          }
+        } else {
+          // Fallback for layouts without `.road-middle`: keep fixed overlay anchored to targetBox
+          if (targetBox.dataset.terraHiddenGear !== '1') {
+            targetBox.dataset.terraHiddenGear = '1';
+            targetBox.style.opacity = '0';
+            targetBox.style.pointerEvents = 'none';
+          }
+          if (hudEl) {
+            if (hudEl.parentElement !== document.body && document.body) {
+              document.body.appendChild(hudEl);
+            }
+            hudEl.classList.remove('tg-in-flow');
+            const r = targetBox.getBoundingClientRect();
+            const centerX = r.left + r.width / 2;
+            const bottomPx = Math.max(8, Math.round(window.innerHeight - r.bottom));
+            const leftPx = Math.max(8, Math.min(window.innerWidth - 228, Math.round(centerX - 110)));
+            hudEl.style.display = 'block';
+            hudEl.style.bottom = `${bottomPx}px`;
+            hudEl.style.left = `${leftPx}px`;
+            hudEl.style.top = 'auto';
+            hudEl.style.right = 'auto';
+          }
         }
-        if (!foundGearEl && GEAR_REGEX.test(t) && isElementVisible(el)) {
-          foundGearEl = el;
-        }
-      }
-    }
-
-    // Anchor our HUD directly onto Biketerra's "Gear X" DOM element when visible (and not in ERG mode)
-    if (foundGearEl && !foundErg) {
-      const targetBox = foundGearEl.closest('.gear-indicator, .virtual-gear') || foundGearEl;
-      state.nativeGearEl = targetBox;
-      restoreHiddenGearElements(targetBox);
-
-      if (targetBox.dataset.terraHiddenGear !== '1') {
-        targetBox.dataset.terraHiddenGear = '1';
-        targetBox.style.opacity = '0';
-        targetBox.style.pointerEvents = 'none';
+      } else {
+        // Either in ERG mode or "Gear X" is not on screen -> restore native DOM & hide our HUD
+        state.nativeGearEl = null;
+        restoreHiddenGearElements();
+        hideGearHud();
       }
 
-      if (hudEl) {
-        const r = targetBox.getBoundingClientRect();
-        // Anchor our HUD to the exact center/bottom of Biketerra's "Gear X" box
-        const centerX = r.left + r.width / 2;
-        const bottomPx = Math.max(8, Math.round(window.innerHeight - r.bottom));
-        const leftPx = Math.max(8, Math.min(window.innerWidth - 228, Math.round(centerX - 110)));
-
-        hudEl.style.display = 'block';
-        hudEl.style.bottom = `${bottomPx}px`;
-        hudEl.style.left = `${leftPx}px`;
-        hudEl.style.top = 'auto';
-        hudEl.style.right = 'auto';
+      if (foundErg !== state.isErgMode || foundErgText !== state.ergText) {
+        state.isErgMode = foundErg;
+        state.ergText = foundErgText;
+        terra.log(foundErg
+          ? `ERG mode detected (${foundErgText}) -> hiding Gear HUD & passing shifters through to Biketerra (W/S)`
+          : `Virtual Shifting mode active -> 2x12 shifters & HUD engaged`);
       }
-    } else {
-      // Either in ERG mode ("ERG Xw") or "Gear X" is not on screen -> restore native DOM & hide our HUD
-      state.nativeGearEl = null;
-      restoreHiddenGearElements();
-      if (hudEl) {
-        hudEl.style.display = 'none';
-      }
-    }
-
-    if (foundErg !== state.isErgMode || foundErgText !== state.ergText) {
-      state.isErgMode = foundErg;
-      state.ergText = foundErgText;
-      terra.log(foundErg
-      ? `ERG mode detected (${foundErgText}) -> hiding Gear HUD & passing shifters through to Biketerra (W/S)`
-      : `Virtual Shifting mode active -> 2x12 shifters & HUD engaged`);
+    } finally {
+      isScanningDom = false;
     }
   }
 
@@ -566,152 +645,221 @@ nativeGearEl: null
       window.removeEventListener('keyup', onKeyEvent, true);
     });
 
-    // --- 4. ON-SCREEN GEAR INDICATOR HUD (LOCKED TO "Gear X" POSITION) ---
+    // --- 4. ON-SCREEN GEAR INDICATOR HUD (REPLACES `.road-readout` IN-FLOW INSIDE `.road-middle`) ---
+    // Mirrors Biketerra's in-ride Rider Stat HUD (`.panel`/`.glass` neutral dark translucent surface,
+    // borderless, crisp white numerals, `--white-4` secondary labels) and sizes everything in `rem`
+    // so the entire widget scales smoothly with Biketerra's Text Size setting.
     terra.ui.addStyle(`
+    .road-middle [data-terra-hidden-gear="1"] {
+      display: none !important;
+    }
     #terra-gear-hud {
-    position: fixed;
-    z-index: 99990;
-    display: none;
-    width: 220px;
-    padding: 10px 12px;
-    border-radius: 12px;
-    background: rgba(16, 18, 23, 0.88);
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
-    color: #f4f4f5;
-    font-family: system-ui, -apple-system, sans-serif;
-    user-select: none;
-    transition: border-color 0.15s ease, transform 0.1s ease;
+      position: fixed;
+      z-index: 99990;
+      display: none;
+      width: 13.75rem;
+      padding: 0.45rem 0.65rem 0.5rem;
+      border-radius: var(--radius-md, 0.5rem);
+      background-color: var(--overlay-4, rgba(0, 0, 0, 0.53));
+      border: 1px solid transparent;
+      color: #fff;
+      font-family: var(--font, "Overpass", system-ui, -apple-system, sans-serif);
+      font-size: 1rem;
+      line-height: 1.2;
+      text-shadow: var(--hud-text-shadow, 1px 1px 2px var(--overlay-4, rgba(0, 0, 0, 0.5)));
+      user-select: none;
+      pointer-events: auto;
+      box-sizing: border-box;
+      transition: border-color 0.15s ease, transform 0.1s ease;
+    }
+    #terra-gear-hud.tg-in-flow {
+      position: relative;
+      z-index: auto;
+      inset: auto;
     }
     #terra-gear-hud.limit-flash {
-    border-color: #f87171;
-    transform: scale(0.98);
+      border-color: var(--danger, #f28b82);
+      transform: scale(0.98);
     }
     .tg-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding-bottom: 6px;
-      margin-bottom: 8px;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 0.6px;
-      color: #a1a1aa;
+      gap: 0.35rem;
+      padding-bottom: 0.28rem;
+      margin-bottom: 0.38rem;
+      border-bottom: 1px solid var(--white-1, rgba(255, 255, 255, 0.09));
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--white-3, rgba(255, 255, 255, 0.55));
       text-transform: uppercase;
+    }
+    .tg-warn {
+      color: var(--danger, #f28b82);
+      font-size: 0.6rem;
+      font-weight: 700;
+    }
+    .tg-cfg-btn {
+      background: transparent;
+      border: 0;
+      border-radius: var(--radius-sm, 0.25rem);
+      color: var(--white-3, rgba(255, 255, 255, 0.55));
+      cursor: pointer;
+      font-family: inherit;
+      font-size: 0.75rem;
+      line-height: 1;
+      padding: 0.1rem 0.2rem;
+    }
+    .tg-cfg-btn:hover {
+      background: var(--white-2, rgba(255, 255, 255, 0.22));
+      color: #fff;
     }
     .tg-main-readout {
       display: flex;
       justify-content: space-between;
       align-items: baseline;
-      margin-bottom: 8px;
+      gap: 0.4rem;
+      margin-bottom: 0.4rem;
     }
     .tg-gear-num {
-      font-size: 24px;
-      font-weight: 800;
+      font-family: var(--font-mono, "Overpass Mono", monospace);
+      font-size: 1.4rem;
+      font-weight: 700;
       font-variant-numeric: tabular-nums;
-      color: #5DCAA5;
+      letter-spacing: -0.04em;
+      color: #fff;
       line-height: 1;
     }
     .tg-teeth-badge {
-      font-family: monospace;
-      font-size: 13px;
+      font-family: var(--font-mono, "Overpass Mono", monospace);
+      font-size: 0.78rem;
       font-weight: 700;
-      color: #e4e4e7;
-      background: rgba(255, 255, 255, 0.08);
-      padding: 2px 6px;
-      border-radius: 5px;
+      font-variant-numeric: tabular-nums;
+      color: var(--white-4, rgba(255, 255, 255, 0.85));
+      background: var(--white-1, rgba(255, 255, 255, 0.09));
+      padding: 0.1rem 0.35rem;
+      border-radius: var(--radius-sm, 0.25rem);
     }
     .tg-ratio-badge {
-      font-family: monospace;
-      font-size: 11px;
-      color: #a1a1aa;
+      font-family: var(--font-mono, "Overpass Mono", monospace);
+      font-size: 0.72rem;
+      font-variant-numeric: tabular-nums;
+      color: var(--white-4, rgba(255, 255, 255, 0.75));
+    }
+    .tg-drivetrain {
+      display: flex;
+      align-items: flex-end;
+      gap: 0.6rem;
+      height: 2.35rem;
+      padding: 0.25rem 0.38rem;
+      border-radius: var(--radius-sm, 0.25rem);
+      background: var(--overlay-2, rgba(0, 0, 0, 0.28));
+      box-sizing: border-box;
     }
     .tg-front-rings {
       display: flex;
       align-items: flex-end;
-      gap: 4px;
+      gap: 0.25rem;
       height: 100%;
-      padding-right: 8px;
-      border-right: 1px solid rgba(255, 255, 255, 0.1);
+      padding-right: 0.5rem;
+      border-right: 1px solid var(--white-1, rgba(255, 255, 255, 0.12));
     }
     .tg-cassette-cogs {
       display: flex;
       align-items: flex-end;
       justify-content: space-between;
       flex: 1;
-      gap: 2px;
+      gap: 0.125rem;
       height: 100%;
     }
     .tg-bar {
       flex: 1;
-      border-radius: 2px;
-      background: rgba(255, 255, 255, 0.18);
+      border-radius: 0.125rem;
+      background: var(--white-2, rgba(255, 255, 255, 0.25));
       transition: background 0.12s ease, box-shadow 0.12s ease;
       cursor: pointer;
     }
+    .tg-bar:hover {
+      background: var(--white-3, rgba(255, 255, 255, 0.5));
+    }
     .tg-bar.active-front {
-      background: #60a5fa;
-      box-shadow: 0 0 8px rgba(96, 165, 250, 0.6);
+      background: #fff;
+      box-shadow: 0 0 0.35rem rgba(255, 255, 255, 0.45);
     }
     .tg-bar.active-rear {
-      background: #5DCAA5;
-      box-shadow: 0 0 8px rgba(93, 202, 165, 0.6);
+      background: var(--success, #6dd44d);
+      box-shadow: 0 0 0.35rem color-mix(in oklab, var(--success, #6dd44d) 60%, transparent);
     }
     .tg-bar.cross-chain {
-      background: #f59e0b !important;
-      box-shadow: 0 0 8px rgba(245, 158, 11, 0.6) !important;
+      background: var(--danger, #f28b82) !important;
+      box-shadow: 0 0 0.35rem color-mix(in oklab, var(--danger, #f28b82) 60%, transparent) !important;
     }
     .tg-controls {
       display: flex;
       justify-content: space-between;
-      gap: 6px;
-      margin-top: 8px;
+      gap: 0.375rem;
+      margin-top: 0.4rem;
     }
     .tg-btn-group {
       display: flex;
       flex: 1;
-      gap: 3px;
+      gap: 0.2rem;
       align-items: center;
     }
     .tg-btn {
       flex: 1;
-      padding: 4px 0;
-      border-radius: 5px;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      background: rgba(255, 255, 255, 0.06);
-      color: #e4e4e7;
-      font-size: 10px;
+      padding: 0.24rem 0;
+      border-radius: var(--radius-sm, 0.25rem);
+      border: 0;
+      background: var(--white-1, rgba(255, 255, 255, 0.08));
+      color: var(--white-4, rgba(255, 255, 255, 0.8));
+      font-family: inherit;
+      font-size: 0.65rem;
       font-weight: 700;
+      line-height: 1.2;
       cursor: pointer;
       text-align: center;
     }
     .tg-btn:hover {
-      background: rgba(255, 255, 255, 0.15);
+      background: var(--white-2, rgba(255, 255, 255, 0.22));
+      color: #fff;
+    }
+    .tg-btn-save {
+      background: var(--white-2, rgba(255, 255, 255, 0.2));
+      color: #fff;
+      padding: 0.28rem 0;
+    }
+    .tg-btn-save:hover {
+      background: var(--success, #6dd44d);
+      color: #111;
     }
     .tg-config-drawer {
       display: none;
       flex-direction: column;
-      gap: 6px;
-      margin-top: 8px;
-      padding-top: 8px;
-      border-top: 1px solid rgba(255, 255, 255, 0.1);
-      font-size: 10px;
+      gap: 0.375rem;
+      margin-top: 0.4rem;
+      padding-top: 0.4rem;
+      border-top: 1px solid var(--white-1, rgba(255, 255, 255, 0.1));
+      font-size: 0.65rem;
     }
     .tg-config-drawer.open {
       display: flex;
     }
+    .tg-field-lbl {
+      color: var(--white-4, rgba(255, 255, 255, 0.78));
+      margin-bottom: 0.15rem;
+    }
     .tg-input {
       width: 100%;
       box-sizing: border-box;
-      background: rgba(0, 0, 0, 0.45);
-      border: 1px solid rgba(255, 255, 255, 0.2);
+      background: var(--overlay-4, rgba(0, 0, 0, 0.5));
+      border: 1px solid var(--white-2, rgba(255, 255, 255, 0.22));
       color: #fff;
-      border-radius: 4px;
-      padding: 3px 6px;
-      font-family: monospace;
-      font-size: 10px;
+      border-radius: var(--radius-sm, 0.25rem);
+      padding: 0.2rem 0.38rem;
+      font-family: var(--font-mono, "Overpass Mono", monospace);
+      font-size: 0.65rem;
     }
     `);
 
@@ -740,16 +888,16 @@ nativeGearEl: null
 
       hudEl.innerHTML = `
       <div class="tg-header">
-      <span>⚙️ <span id="tg-spec-title">2x12 GRX</span></span>
-      <span id="tg-warn-label" style="color: #f59e0b; font-size: 9px;"></span>
-      <button type="button" id="tg-cfg-toggle" title="Configure Gears" style="background:none;border:none;color:#a1a1aa;cursor:pointer;font-size:11px;padding:0;">✎</button>
+      <span id="tg-spec-title">2x12 GRX</span>
+      <span id="tg-warn-label" class="tg-warn"></span>
+      <button type="button" id="tg-cfg-toggle" class="tg-cfg-btn" title="Configure Gears">✎</button>
       </div>
       <div class="tg-main-readout">
-      <span class="tg-gear-num" id="tg-gear-index">2 - 5</span>
+      <span class="tg-gear-num" id="tg-gear-index">2-5</span>
       <span class="tg-teeth-badge" id="tg-teeth-text">46×21T</span>
       <span class="tg-ratio-badge" id="tg-ratio-text">2.19x</span>
       </div>
-      <div style="display:flex;align-items:flex-end;gap:10px;height:38px;padding:4px 6px;border-radius:8px;background:rgba(0,0,0,0.35);">
+      <div class="tg-drivetrain">
       <div class="tg-front-rings" id="tg-front-bars"></div>
       <div class="tg-cassette-cogs" id="tg-rear-bars"></div>
       </div>
@@ -765,14 +913,14 @@ nativeGearEl: null
       </div>
       <div class="tg-config-drawer" id="tg-config-drawer">
       <div>
-      <div style="color:#a1a1aa;margin-bottom:2px;">Front Chainrings (Teeth):</div>
+      <div class="tg-field-lbl">Front Chainrings (Teeth):</div>
       <input type="text" class="tg-input" id="tg-inp-front" value="${config.front.join(', ')}">
       </div>
       <div>
-      <div style="color:#a1a1aa;margin-bottom:2px;">Rear Cassette (Teeth):</div>
+      <div class="tg-field-lbl">Rear Cassette (Teeth):</div>
       <input type="text" class="tg-input" id="tg-inp-rear" value="${config.rear.join(', ')}">
       </div>
-      <button type="button" class="tg-btn" id="tg-save-cfg" style="background:#5DCAA5;color:#000;padding:4px;">Save & Apply Drivetrain</button>
+      <button type="button" class="tg-btn tg-btn-save" id="tg-save-cfg">Save & Apply Drivetrain</button>
       </div>
       `;
 
@@ -822,7 +970,7 @@ nativeGearEl: null
       hudEl.querySelector('#tg-gear-index').textContent = `${state.frontIdx + 1}-${state.rearIdx + 1}`;
       hudEl.querySelector('#tg-teeth-text').textContent = `${fTeeth}×${rTeeth}T`;
       hudEl.querySelector('#tg-ratio-text').textContent = `${ratio}x`;
-      hudEl.querySelector('#tg-warn-label').textContent = cross ? '⚡ CROSS' : '';
+      hudEl.querySelector('#tg-warn-label').textContent = cross ? 'CROSS' : '';
 
       const fContainer = hudEl.querySelector('#tg-front-bars');
       const maxF = Math.max(...config.front, 50);
@@ -831,7 +979,7 @@ nativeGearEl: null
         const bar = document.createElement('div');
         const hPct = Math.max(35, Math.round((t / maxF) * 100));
         bar.className = 'tg-bar' + (idx === state.frontIdx ? ' active-front' : '');
-        bar.style.cssText = `width: 10px; height: ${hPct}%;`;
+        bar.style.cssText = `width: 0.625rem; height: ${hPct}%;`;
         bar.title = `Front Ring ${idx + 1}: ${t}T`;
         bar.addEventListener('click', () => applyGearChange(idx, state.rearIdx, 'hud-click'));
         fContainer.appendChild(bar);
@@ -883,10 +1031,10 @@ nativeGearEl: null
       terra.log(`Init gear state published: ${state.frontIdx + 1}-${state.rearIdx + 1} (${fTeeth}x${rTeeth}T)`);
     }
 
-    const domObserver = new MutationObserver(() => {
-      if (location.pathname.includes('/ride')) {
-        scanBiketerraDom();
-      }
+    const domObserver = new MutationObserver((mutations) => {
+      if (!location.pathname.includes('/ride')) return;
+      if (hudEl && mutations.every(m => hudEl.contains(m.target))) return;
+      scanBiketerraDom();
     });
     domObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
 
