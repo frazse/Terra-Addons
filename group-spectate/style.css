@@ -1,0 +1,230 @@
+/* Trigger pill inside Biketerra's `.people-status` (inherits `.hud-pill` & `.bg-dark`)
+ * Note: intentionally avoids adding custom `backdrop-filter` per Vulkan/ANGLE GPU guidance. */
+.gs-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--white-4, rgba(255, 255, 255, 0.8));
+  font-family: var(--font, "Overpass", system-ui, -apple-system, sans-serif);
+  font-size: 0.8rem;
+  line-height: inherit;
+  border: 0;
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.25rem 0.6rem;
+  background-color: var(--overlay-4, rgba(0, 0, 0, 0.53));
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-user-select: none;
+  user-select: none;
+  transition: color 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease;
+}
+.gs-chip:hover {
+  color: #fff;
+  background-color: var(--overlay-5, rgba(0, 0, 0, 0.67));
+}
+.gs-chip.open {
+  color: #fff;
+  box-shadow: inset 0 0 0 1px var(--white-2, rgba(255, 255, 255, 0.25));
+}
+.gs-chip.active {
+  color: var(--focus, #ffcd7c);
+  box-shadow: inset 0 0 0 1px var(--selected-line, rgba(255, 205, 124, 0.65));
+  background-color: color-mix(in oklab, var(--focus, #ffcd7c) 14%, var(--overlay-5, rgba(0, 0, 0, 0.67)));
+}
+.gs-chip.active:hover {
+  color: #fff;
+}
+.gs-chip .gs-dot {
+  display: none;
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: var(--radius-full, 9999px);
+  background: var(--focus, #ffcd7c);
+  box-shadow: 0 0 6px var(--focus, #ffcd7c);
+  flex: none;
+}
+.gs-chip.active .gs-dot {
+  display: inline-block;
+}
+/* Fallback position only when Biketerra's `.people-status` container is absent */
+.gs-chip.gs-chip-floating {
+  position: fixed;
+  top: 0.5rem;
+  right: 0.5rem;
+  z-index: 2147483645;
+}
+.gs-chip.gs-chip-hidden {
+  display: none;
+}
+
+/* Popover panel styled with Biketerra's warm plum/gold `:root` design tokens */
+.gs-panel {
+  position: fixed;
+  top: 2.5rem;
+  right: 0.5rem;
+  z-index: 2147483645;
+  width: min(var(--hud-people-w, 20rem), calc(100vw - 1rem));
+  max-height: calc(100vh - 4rem);
+  overflow-y: auto;
+  display: none;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  border-radius: var(--radius-md, 0.5rem);
+  border: 1px solid var(--line, rgba(255, 255, 255, 0.2));
+  background-color: color-mix(in oklab, var(--sunk, #251c29) 94%, transparent);
+  color: var(--ink, #f0eae4);
+  font-family: var(--font, "Overpass", system-ui, -apple-system, sans-serif);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  box-shadow: var(--shadow-lg, 0 0.75rem 2rem -0.5rem rgba(0, 0, 0, 0.55));
+  box-sizing: border-box;
+}
+.gs-panel.open {
+  display: flex;
+}
+.gs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--white-1, rgba(255, 255, 255, 0.1));
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #fff;
+}
+.gs-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm, 0.25rem);
+  background: transparent;
+  color: var(--ink-3, rgba(255, 255, 255, 0.65));
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.gs-close-btn:hover {
+  background: var(--white-1, rgba(255, 255, 255, 0.1));
+  color: #fff;
+}
+.gs-hint {
+  font-size: 0.72rem;
+  color: var(--ink-3, rgba(255, 255, 255, 0.62));
+}
+.gs-status {
+  padding: 0.4rem 0.55rem;
+  border-radius: var(--radius-sm, 0.25rem);
+  background: var(--overlay-3, rgba(0, 0, 0, 0.38));
+  border: 1px solid var(--white-1, rgba(255, 255, 255, 0.1));
+  font-size: 0.74rem;
+  color: var(--ink-2, rgba(255, 255, 255, 0.78));
+}
+.gs-status.active {
+  border-color: var(--selected-line, rgba(255, 205, 124, 0.55));
+  background: color-mix(in oklab, var(--focus, #ffcd7c) 9%, var(--overlay-3, rgba(0, 0, 0, 0.4)));
+  color: var(--ink, #fff);
+}
+.gs-seg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.3rem;
+}
+.gs-btn {
+  background: var(--overlay-2, rgba(0, 0, 0, 0.26));
+  color: var(--ink-2, rgba(255, 255, 255, 0.78));
+  border: 1px solid var(--white-1, rgba(255, 255, 255, 0.12));
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.32rem 0.55rem;
+  font: inherit;
+  font-size: 0.76rem;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.gs-btn:hover {
+  background: var(--white-1, rgba(255, 255, 255, 0.12));
+  color: #fff;
+}
+.gs-btn.on {
+  background: var(--selected, rgba(255, 205, 124, 0.14));
+  border-color: var(--selected-line, rgba(255, 205, 124, 0.65));
+  color: var(--focus, #ffcd7c);
+  font-weight: 600;
+}
+.gs-btn.danger {
+  background: color-mix(in oklab, var(--danger, #e87a7a) 14%, transparent);
+  border-color: color-mix(in oklab, var(--danger, #e87a7a) 45%, transparent);
+  color: var(--danger, #f29494);
+  font-weight: 600;
+}
+.gs-btn.danger:hover {
+  background: color-mix(in oklab, var(--danger, #e87a7a) 24%, transparent);
+  color: #fff;
+}
+.gs-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding-top: 0.25rem;
+  border-top: 1px solid var(--white-1, rgba(255, 255, 255, 0.1));
+}
+.gs-group-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  text-align: left;
+  padding: 0.35rem 0.55rem;
+}
+.gs-group-meta {
+  font-family: var(--font-mono, "Overpass Mono", monospace);
+  font-size: 0.7rem;
+  color: var(--ink-3, rgba(255, 255, 255, 0.58));
+  white-space: nowrap;
+}
+.gs-btn.on .gs-group-meta {
+  color: var(--focus, #ffcd7c);
+}
+.gs-range-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.gs-range-row label {
+  flex: 1;
+  font-size: 0.75rem;
+  color: var(--ink-2, rgba(255, 255, 255, 0.8));
+}
+.gs-range-row input[type="range"] {
+  width: 6.5rem;
+  accent-color: var(--focus, #ffcd7c);
+  cursor: pointer;
+}
+.gs-val {
+  min-width: 2.6rem;
+  text-align: right;
+  font-family: var(--font-mono, "Overpass Mono", monospace);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+  color: var(--ink, #f0eae4);
+}
+
+/* Visual cue when Ctrl is held over rider-list group headers (warm gold Biketerra accent) */
+body.gs-ctrl-held .hud-zone.zone-people [data-gs-group-header]:hover,
+body.gs-ctrl-held .riders-main [data-gs-group-header]:hover,
+body.gs-ctrl-held .riders-main .rider.is-group:hover,
+body.gs-ctrl-held .hud-zone.zone-people .rider.is-group:hover {
+  outline: 1px dashed var(--focus, #ffcd7c) !important;
+  background: color-mix(in oklab, var(--focus, #ffcd7c) 15%, transparent) !important;
+  cursor: pointer !important;
+}
+.gs-group-active-hdr {
+  box-shadow: inset 2px 0 0 var(--focus, #ffcd7c) !important;
+  background: color-mix(in oklab, var(--focus, #ffcd7c) 14%, var(--overlay-2, rgba(0, 0, 0, 0.25))) !important;
+}

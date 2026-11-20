@@ -1,0 +1,50 @@
+{
+  "id": "group-spectate",
+  "name": "Group Spectate",
+  "version": "0.2.1",
+  "category": "Camera",
+  "description": "Spectate a group centered on the mean position of its riders. Ctrl+click a rider-list group header or pick a live <25m pack from the Group Cam pill.",
+  "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
+  "js": ["main.js"],
+  "css": ["style.css"],
+  "enabled": true,
+  "settings": [
+    {
+      "key": "framingMode",
+      "label": "Camera distance mode",
+      "type": "select",
+      "options": ["fixed", "auto"],
+      "default": "auto",
+      "description": "fixed = keep Biketerra's current camera distance; auto = pull back automatically as the group spreads."
+    },
+    {
+      "key": "trackMode",
+      "label": "Group tracking mode",
+      "type": "select",
+      "options": ["cluster", "dom"],
+      "default": "cluster",
+      "description": "cluster = dynamically follow the <25m pack (drops riders who fall behind, includes joiners); dom = follow only riders from the clicked group while grouped."
+    },
+    {
+      "key": "clusterRadius",
+      "label": "Cluster radius (m)",
+      "type": "number",
+      "default": 25,
+      "description": "Distance threshold in meters for auto-detecting groups and dynamic cluster tracking."
+    },
+    {
+      "key": "pullBackFactor",
+      "label": "Auto pull-back factor",
+      "type": "number",
+      "default": 1.6,
+      "description": "How far to pull the camera back per meter of group radius in auto mode."
+    },
+    {
+      "key": "smoothing",
+      "label": "Center smoothing (0.02 - 1.0)",
+      "type": "number",
+      "default": 0.14,
+      "description": "EMA smoothing factor per frame for group center & pull-back (lower = smoother, 1 = instant)."
+    }
+  ]
+}
