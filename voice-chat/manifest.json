@@ -1,9 +1,9 @@
 {
   "id": "voice-chat",
   "name": "Voice Chat (External Whisper Server)",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "category": "Chat",
-  "description": "Requires an external faster-whisper Wyoming TCP server running outside Terra (e.g. linuxserver/faster-whisper on port 10300). Dictate Biketerra chat via Zwift Ride Push-to-Talk or hands-free Auto mode.",
+  "description": "Requires an external faster-whisper Wyoming TCP server running outside Terra (e.g. linuxserver/faster-whisper on port 10300). Docks directly into Biketerra's in-game chat zone with Zwift Ride Push-to-Talk or hands-free Auto mode.",
   "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate*"],
   "js": ["main.js"],
   "css": ["style.css"],
@@ -58,6 +58,13 @@
       "type": "text",
       "default": "KeyT",
       "description": "Biketerra key used to open chat if the chat input is closed (default: KeyT)."
+    },
+    {
+      "key": "autoOpenChat",
+      "label": "Auto-open Biketerra chat on ride start",
+      "type": "checkbox",
+      "default": false,
+      "description": "Automatically opens Biketerra's in-game chat panel when entering a ride so Voice Chat stays attached beneath it."
     },
     {
       "key": "sendBehavior",

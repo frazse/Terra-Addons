@@ -25,6 +25,7 @@
     wakePhrases: 'hey chat, chat, send message',
     pttKey: 'KeyV',
     chatToggleKey: 'KeyT',
+    autoOpenChat: false,
     sendBehavior: 'countdown',
     handsFreeSendBehavior: 'voice',
     browserAudioProcessing: false,
@@ -422,6 +423,7 @@
       postToBiketerraChat: (text, auto) => postToBiketerraChat(text, auto),
       handleTranscribedText: (rawText, fromHandsFree) => handleTranscribedText(rawText, fromHandsFree),
       getPendingDraft: () => (pendingToast ? { text: pendingToast.text, kind: pendingToast.kind } : null),
+      syncDock: () => syncDock(),
     };
   }
   window.__terraVoiceChatHelpers = exportHelpersForTests;
@@ -536,7 +538,7 @@
     return !!(
       el &&
       el.closest &&
-      el.closest('#tvc-hud, #terra-overlay, #terra-btn, #btz-panel, #btz-console-hud, .tr-gr-card')
+      el.closest('#tvc-hud, #terra-overlay, #terra-btn, .terra-cog-action, #btz-panel, #btz-console-hud, .tr-gr-card')
     );
   }
 
@@ -620,7 +622,8 @@
     let bestScore = 0;
     for (const el of queryAllDeep('[id*="chat" i], [class*="chat" i], [aria-label*="chat" i]')) {
       if (isAddonElement(el) || !isElementVisible(el, 60, 20)) continue;
-      if (el.tagName === 'BUTTON' || el.tagName === 'A') continue;
+      if (el.tagName === 'BUTTON' || el.tagName === 'A' || el.getAttribute?.('role') === 'button') continue;
+      if (el.closest?.('.action-buttons, .people-status')) continue;
       const r = el.getBoundingClientRect();
       let sc = 2;
       if (el.querySelector?.('input, textarea, [contenteditable]')) sc += 8;
@@ -633,13 +636,40 @@
     return best;
   }
 
-  function findChatToggleButton() {
-    for (const btn of queryAllDeep('button, [role="button"]')) {
-      if (isAddonElement(btn) || !isElementVisible(btn, 16, 16)) continue;
-      const meta = (attrString(btn) + ' ' + (btn.textContent || '')).toLowerCase();
-      if (/\bchat\b/.test(meta)) return btn;
+  function buttonMetaString(btn) {
+    const parts = [
+      attrString(btn),
+      btn.getAttribute?.('data-tooltip'),
+      btn.getAttribute?.('data-title'),
+      btn.getAttribute?.('data-action'),
+      btn.textContent,
+    ];
+    if (typeof btn.querySelectorAll === 'function') {
+      for (const sub of btn.querySelectorAll('[title], [aria-label], svg, title')) {
+        parts.push(
+          sub.getAttribute?.('title'),
+          sub.getAttribute?.('aria-label'),
+          typeof sub.className === 'string' ? sub.className : sub.getAttribute?.('class'),
+          sub.tagName === 'title' || sub.tagName === 'TITLE' ? sub.textContent : ''
+        );
+      }
     }
-    return null;
+    return parts.filter(Boolean).join(' ').toLowerCase();
+  }
+
+  function findChatToggleButton() {
+    const chatRe = /\bchat\b|chat[-_]?btn|chat[-_]?toggle|toggle[-_]?chat|chat[-_]?icon/i;
+    const candidates = queryAllDeep('.action-buttons .action-button, button, [role="button"], .hud-pill');
+    let fallback = null;
+    for (const btn of candidates) {
+      if (isAddonElement(btn) || !isElementVisible(btn, 16, 16)) continue;
+      const meta = buttonMetaString(btn);
+      if (chatRe.test(meta)) {
+        if (btn.closest?.('.action-buttons')) return btn;
+        if (!fallback) fallback = btn;
+      }
+    }
+    return fallback;
   }
 
   function simulateRealClick(el) {
@@ -680,12 +710,13 @@
     const kc = keyCodeForCode(code);
 
     const active = document.activeElement;
-    if (active && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName)) {
+    if (active && active !== document.body && active.tagName !== 'CANVAS') {
       try { active.blur(); } catch {}
     }
     const opts = { key, code, keyCode: kc, which: kc, bubbles: true, cancelable: true };
-    document.dispatchEvent(new KeyboardEvent('keydown', opts));
-    document.dispatchEvent(new KeyboardEvent('keyup', opts));
+    const target = document.body || window;
+    target.dispatchEvent(new KeyboardEvent('keydown', opts));
+    target.dispatchEvent(new KeyboardEvent('keyup', opts));
   }
 
   function logChatDomDiagnostics() {
@@ -698,7 +729,11 @@
         .filter((e) => !isAddonElement(e))
         .slice(0, 8)
         .map((e) => `${e.tagName.toLowerCase()}#${e.id || ''}.${String(e.className || '').trim()}`);
-      log('chat DOM diag:', { inputs, chats, active: document.activeElement?.tagName });
+      const actions = queryAllDeep('.action-buttons .action-button')
+        .filter((e) => !isAddonElement(e))
+        .slice(0, 12)
+        .map((e) => `${e.tagName.toLowerCase()}.${String(e.className || '').trim()}(${e.getAttribute?.('title') || e.getAttribute?.('aria-label') || e.getAttribute?.('data-tooltip') || ''})`);
+      log('chat DOM diag:', { inputs, chats, actions, active: document.activeElement?.tagName });
     } catch {}
   }
 
@@ -799,6 +834,7 @@
     if (!found || !found.el) {
       throw new Error('Could not find Biketerra chat box (check Terra logs)');
     }
+    syncDock();
     const { el } = found;
     simulateRealClick(el);
     setNativeInputValue(el, text);
@@ -1476,13 +1512,22 @@
     updateHud();
   }
 
-  /* ── 7. Ride HUD UI ───────────────────────────────────────────────────────── */
+  /* ── 7. Ride HUD UI (Docked in Biketerra's right-hand chat column) ────────── */
+  const CHAT_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>';
+
   const hud = document.createElement('div');
   hud.id = 'tvc-hud';
   hud.style.opacity = String(clamp(S.hudOpacity, 30, 100, 88) / 100);
 
   const pill = document.createElement('div');
   pill.className = 'tvc-pill';
+
+  const pillLeft = document.createElement('div');
+  pillLeft.className = 'tvc-pill-l';
+  const pillRight = document.createElement('div');
+  pillRight.className = 'tvc-pill-r';
 
   const micBtn = document.createElement('button');
   micBtn.className = 'tvc-mic-btn';
@@ -1504,13 +1549,21 @@
   modeBtn.type = 'button';
   modeBtn.title = 'Switch mic mode: PTT (bike) <-> AUTO (rowing)';
 
+  const chatBtn = document.createElement('button');
+  chatBtn.className = 'tvc-chat-btn';
+  chatBtn.type = 'button';
+  chatBtn.innerHTML = CHAT_SVG;
+  chatBtn.title = 'Toggle Biketerra chat';
+
   const cfgBtn = document.createElement('button');
   cfgBtn.className = 'tvc-cfg-btn';
   cfgBtn.type = 'button';
   cfgBtn.title = 'Voice Chat settings';
   cfgBtn.textContent = '\u2699';
 
-  pill.append(micBtn, vuWrap, modeBtn, cfgBtn);
+  pillLeft.append(micBtn, vuWrap);
+  pillRight.append(modeBtn, chatBtn, cfgBtn);
+  pill.append(pillLeft, pillRight);
 
   const toast = document.createElement('div');
   toast.className = 'tvc-toast';
@@ -1522,8 +1575,252 @@
   toastActions.className = 'tvc-toast-actions';
   toast.append(toastHead, toastMsg, toastActions);
 
-  hud.append(toast, pill);
+  hud.append(pill, toast);
   document.body.appendChild(hud);
+
+  let savedFloatPos = null;
+  let joinedChatEl = null;
+  let dockObserver = null;
+  let dockObservedEl = null;
+  let dockInterval = 0;
+  let autoOpenAttempted = false;
+
+  function clearJoinedChat() {
+    if (joinedChatEl) {
+      try { joinedChatEl.classList.remove('tvc-chat-joined'); } catch {}
+      joinedChatEl = null;
+    }
+  }
+
+  function applyFloatingPos() {
+    if (!savedFloatPos || !Number.isFinite(savedFloatPos.left)) return;
+    const clampedLeft = Math.max(8, Math.min(window.innerWidth - 180, savedFloatPos.left));
+    const clampedBottom = Math.max(8, Math.min(window.innerHeight - 64, savedFloatPos.bottom));
+    hud.style.left = clampedLeft + 'px';
+    hud.style.bottom = clampedBottom + 'px';
+    hud.style.top = 'auto';
+  }
+
+  function findPeopleZone() {
+    if (typeof document.querySelector !== 'function') return null;
+    return document.querySelector('.hud-zone.zone-people');
+  }
+
+  function findChatPanelForDock(peopleZone) {
+    const input = findChatInput();
+    const raw = input || findChatContainer();
+    if (!raw || isAddonElement(raw)) return null;
+
+    if (peopleZone && typeof peopleZone.contains === 'function' && peopleZone.contains(raw)) {
+      let cur = raw;
+      while (cur && cur.parentElement && cur.parentElement !== peopleZone) {
+        cur = cur.parentElement;
+      }
+      if (cur && cur !== hud && cur.parentElement === peopleZone) {
+        if (cur.classList && (cur.classList.contains('people-status') || cur.classList.contains('riders-main'))) {
+          return null;
+        }
+        return cur;
+      }
+    }
+
+    const zone = raw.closest ? raw.closest('.hud-zone') : null;
+    if (zone && zone !== peopleZone) {
+      let cur = raw;
+      while (cur && cur.parentElement && cur.parentElement !== zone) {
+        cur = cur.parentElement;
+      }
+      if (cur && cur !== hud && cur.parentElement === zone) return cur;
+    }
+
+    const panel = (raw.closest && raw.closest('.panel, [class*="chat" i], [id*="chat" i]')) || raw.parentElement;
+    if (!panel || panel === document.body || panel === hud || isAddonElement(panel)) return null;
+    return panel;
+  }
+
+  function isFlexColumnParent(el) {
+    if (!el) return false;
+    if (el.classList && el.classList.contains('zone-people')) return true;
+    if (typeof window !== 'undefined' && typeof window.getComputedStyle === 'function') {
+      try {
+        const cs = window.getComputedStyle(el);
+        if (cs && String(cs.display || '').includes('flex') && String(cs.flexDirection || '').startsWith('column')) {
+          return true;
+        }
+      } catch {}
+    }
+    return false;
+  }
+
+  function computeJoinGapPx(parentEl, chatPanel) {
+    if (typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') return '0.5rem';
+    try {
+      const pcs = window.getComputedStyle(parentEl);
+      const ccs = window.getComputedStyle(chatPanel);
+      const gap = parseFloat(pcs.rowGap || pcs.gap || '0') || 0;
+      const mb = parseFloat(ccs.marginBottom || '0') || 0;
+      return `${Math.max(0, gap + mb)}px`;
+    } catch {
+      return '0.5rem';
+    }
+  }
+
+  function ensureDockObserver(target) {
+    if (typeof MutationObserver !== 'function' || !target) return;
+    if (dockObservedEl === target && dockObserver) return;
+    if (dockObserver) {
+      try { dockObserver.disconnect(); } catch {}
+      dockObserver = null;
+    }
+    dockObservedEl = target;
+    let rafQueued = false;
+    dockObserver = new MutationObserver(() => {
+      if (cleaned || rafQueued) return;
+      rafQueued = true;
+      const run = () => {
+        rafQueued = false;
+        if (!cleaned) syncDock();
+      };
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+      else setTimeout(run, 16);
+    });
+    try {
+      dockObserver.observe(target, { childList: true, subtree: target === document.body ? false : true });
+    } catch {}
+  }
+
+  function syncDock() {
+    if (cleaned) return;
+    const peopleZone = findPeopleZone();
+    const chatPanel = findChatPanelForDock(peopleZone);
+
+    if (peopleZone) ensureDockObserver(peopleZone);
+    else if (document.body) ensureDockObserver(document.body);
+
+    const chatKeyLabel = String(S.chatToggleKey || 'KeyT').replace(/^Key/, '');
+    chatBtn.classList.toggle('is-open', Boolean(chatPanel));
+    chatBtn.title = chatPanel ? `Close chat (${chatKeyLabel})` : `Open chat (${chatKeyLabel})`;
+
+    if (chatPanel && chatPanel.parentElement && isFlexColumnParent(chatPanel.parentElement)) {
+      const parent = chatPanel.parentElement;
+      if (joinedChatEl && joinedChatEl !== chatPanel) clearJoinedChat();
+      joinedChatEl = chatPanel;
+      chatPanel.classList.add('tvc-chat-joined');
+
+      hud.classList.add('tvc-docked', 'tvc-docked-chat');
+      hud.classList.remove('tvc-docked-inner');
+      hud.style.left = '';
+      hud.style.bottom = '';
+      hud.style.top = '';
+      hud.style.setProperty('--tvc-join-gap', computeJoinGapPx(parent, chatPanel));
+
+      if (hud.parentNode !== parent || hud.previousElementSibling !== chatPanel) {
+        parent.insertBefore(hud, chatPanel.nextSibling || null);
+      }
+      return;
+    }
+
+    if (chatPanel) {
+      clearJoinedChat();
+      hud.classList.add('tvc-docked', 'tvc-docked-inner');
+      hud.classList.remove('tvc-docked-chat');
+      hud.style.left = '';
+      hud.style.bottom = '';
+      hud.style.top = '';
+      hud.style.removeProperty('--tvc-join-gap');
+      if (hud.parentNode !== chatPanel) {
+        chatPanel.appendChild(hud);
+      }
+      return;
+    }
+
+    if (peopleZone) {
+      clearJoinedChat();
+      hud.classList.add('tvc-docked');
+      hud.classList.remove('tvc-docked-chat', 'tvc-docked-inner');
+      hud.style.left = '';
+      hud.style.bottom = '';
+      hud.style.top = '';
+      hud.style.removeProperty('--tvc-join-gap');
+      if (hud.parentNode !== peopleZone || hud !== peopleZone.lastElementChild) {
+        peopleZone.appendChild(hud);
+      }
+      if (S.autoOpenChat && !autoOpenAttempted) {
+        autoOpenAttempted = true;
+        openChatQuietly();
+      }
+      return;
+    }
+
+    // Floating fallback when neither chat panel nor .zone-people is mounted
+    clearJoinedChat();
+    hud.classList.remove('tvc-docked', 'tvc-docked-chat', 'tvc-docked-inner');
+    hud.style.removeProperty('--tvc-join-gap');
+    hud.style.opacity = String(clamp(S.hudOpacity, 30, 100, 88) / 100);
+    if (hud.parentNode !== document.body && document.body) {
+      document.body.appendChild(hud);
+    }
+    applyFloatingPos();
+  }
+
+  async function waitForChatOpenState(expectedOpen, timeoutMs = 260) {
+    const deadline = performance.now() + timeoutMs;
+    while (performance.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 35));
+      if (cleaned) return false;
+      if (Boolean(findChatPanelForDock(findPeopleZone())) === expectedOpen) return true;
+    }
+    return Boolean(findChatPanelForDock(findPeopleZone())) === expectedOpen;
+  }
+
+  async function openChatQuietly() {
+    if (cleaned) return;
+    if (findChatPanelForDock(findPeopleZone())) {
+      syncDock();
+      return;
+    }
+    dispatchToggleChatKey();
+    let opened = await waitForChatOpenState(true, 260);
+    if (cleaned) return;
+    if (!opened) {
+      const btn = findChatToggleButton();
+      if (btn) {
+        simulateRealClick(btn);
+        opened = await waitForChatOpenState(true, 260);
+      }
+    }
+    if (cleaned) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.tagName !== 'CANVAS') {
+      try { active.blur(); } catch {}
+    }
+    if (!opened) logChatDomDiagnostics();
+    syncDock();
+  }
+
+  async function toggleBiketerraChat() {
+    if (cleaned) return;
+    const wasOpen = Boolean(findChatPanelForDock(findPeopleZone()));
+    const targetOpen = !wasOpen;
+    try { chatBtn.blur(); } catch {}
+
+    // Prefer clicking Biketerra's own chat action button when present (works even if hotkey is rebound)
+    const btn = findChatToggleButton();
+    let changed = false;
+    if (btn) {
+      simulateRealClick(btn);
+      try { btn.blur && btn.blur(); } catch {}
+      changed = await waitForChatOpenState(targetOpen, 260);
+    }
+    if (cleaned) return;
+    if (!changed) {
+      dispatchToggleChatKey();
+      changed = await waitForChatOpenState(targetOpen, 260);
+    }
+    if (cleaned) return;
+    if (!changed) logChatDomDiagnostics();
+    syncDock();
+  }
 
   function hideToast() {
     clearTimeout(toastHideTimer);
@@ -1563,6 +1860,7 @@
 
     const hasHost = !!String(S.host || '').trim();
     modeBtn.textContent = activeMode.toUpperCase();
+    modeBtn.classList.toggle('is-auto', isHandsFreeMode());
 
     if (!hasHost) {
       dotEl.className = 'tvc-dot err';
@@ -1570,14 +1868,14 @@
       micBtn.title = 'Click to configure your Unraid Whisper IP in Terra settings';
     } else if (isRecording) {
       dotEl.className = 'tvc-dot recording';
-      micLabelEl.textContent = recordReason === 'manual' ? 'Stop' : 'Talking…';
+      micLabelEl.textContent = recordReason === 'manual' ? 'Stop' : 'Talking\u2026';
     } else if (txBusy) {
       dotEl.className = 'tvc-dot busy';
-      micLabelEl.textContent = 'Whisper…';
+      micLabelEl.textContent = 'Whisper\u2026';
     } else if (isHandsFreeMode()) {
       if (handsFreeArmed && isMicLive()) {
         dotEl.className = 'tvc-dot listening';
-        micLabelEl.textContent = activeMode === 'wake' ? 'Listening' : 'Auto Mic';
+        micLabelEl.textContent = activeMode === 'wake' ? 'Listening' : 'Auto';
       } else if (handsFreeArmed) {
         dotEl.className = 'tvc-dot err';
         micLabelEl.textContent = 'Tap Mic';
@@ -1594,27 +1892,25 @@
     updateHudVuOnly();
   }
 
-  // Restore saved HUD drag position (bottom-anchored so toasts grow upward)
+  // Restore saved HUD drag position (floating fallback only)
   try {
     const pos = await terra.storage.get(STORAGE_POS_KEY, null);
     if (pos && Number.isFinite(pos.left)) {
-      const clampedLeft = Math.max(8, Math.min(window.innerWidth - 180, pos.left));
       let bottomVal = Number.isFinite(pos.bottom) ? pos.bottom : null;
       if (bottomVal === null && Number.isFinite(pos.top)) {
         bottomVal = window.innerHeight - (pos.top + 48);
       }
       if (bottomVal !== null) {
-        const clampedBottom = Math.max(8, Math.min(window.innerHeight - 64, bottomVal));
-        hud.style.left = clampedLeft + 'px';
-        hud.style.bottom = clampedBottom + 'px';
-        hud.style.top = 'auto';
+        savedFloatPos = { left: pos.left, bottom: bottomVal };
+        if (!hud.classList.contains('tvc-docked')) applyFloatingPos();
       }
     }
   } catch {}
 
-  // Drag pill (ignore clicks on inner buttons; anchor to bottom so toasts always grow upward)
+  // Drag pill (floating fallback only; ignore clicks on inner buttons)
   let dragState = null;
   pill.addEventListener('pointerdown', (e) => {
+    if (hud.classList.contains('tvc-docked')) return;
     if (e.button !== 0 || e.target.closest('button')) return;
     const rect = hud.getBoundingClientRect();
     dragState = { dx: e.clientX - rect.left, dyBottom: rect.bottom - e.clientY };
@@ -1634,14 +1930,15 @@
     dragState = null;
     const rect = hud.getBoundingClientRect();
     const bottom = Math.max(8, Math.round(window.innerHeight - rect.bottom));
-    try { await terra.storage.set(STORAGE_POS_KEY, { left: Math.round(rect.left), bottom }); } catch {}
+    savedFloatPos = { left: Math.round(rect.left), bottom };
+    try { await terra.storage.set(STORAGE_POS_KEY, savedFloatPos); } catch {}
   };
   pill.addEventListener('pointerup', endDrag);
   pill.addEventListener('pointercancel', endDrag);
 
   // Mic button interactions:
   // - If no Unraid host configured: open settings
-  // - In PTT mode: hold > 220ms = hold-to-talk; quick tap = toggle manual recording
+  // - In PTT mode: hold > 180ms = hold-to-talk; quick tap = toggle manual recording
   // - In Hands-Free mode: toggle listening on/off
   let mouseDownAt = 0;
   let mouseHoldTimer = 0;
@@ -1701,10 +1998,18 @@
     cycleMode();
   });
 
+  chatBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleBiketerraChat();
+  });
+
   cfgBtn.addEventListener('click', (e) => {
     e.stopPropagation();
     try { terra.settings.open(); } catch {}
   });
+
+  syncDock();
+  dockInterval = setInterval(syncDock, 350);
 
   /* ── 8. Global Listeners (Zwift Ride Bus, Keyboard Hotkey, Settings) ──────── */
   const unsubBusPtt = terra.bus.on('voice-chat:ptt', (ev) => {
@@ -1783,12 +2088,18 @@
   if (terra.settings && terra.settings.onChange) {
     unsubSettings = terra.settings.onChange(async (ev) => {
       try { S = { ...DEFAULTS, ...(await terra.settings.all()) }; } catch {}
-      hud.style.opacity = String(clamp(S.hudOpacity, 30, 100, 88) / 100);
+      if (!hud.classList.contains('tvc-docked')) {
+        hud.style.opacity = String(clamp(S.hudOpacity, 30, 100, 88) / 100);
+      }
       if (ev && ev.key === 'mode' && ['ptt', 'wake', 'auto'].includes(S.mode)) {
         activeMode = S.mode === 'wake' ? 'auto' : S.mode;
         try { await terra.storage.set(STORAGE_MODE_KEY, activeMode); } catch {}
         if (isHandsFreeMode()) await toggleHandsFreeArmed(true);
         else await toggleHandsFreeArmed(false);
+      }
+      if (ev && ev.key === 'autoOpenChat' && S.autoOpenChat) {
+        autoOpenAttempted = true;
+        openChatQuietly();
       }
       if (ev && (ev.key === 'browserAudioProcessing' || ev.key === 'micSource') && isMicLive()) {
         stopMicHardware();
@@ -1796,6 +2107,7 @@
           ensureMicStarted().catch(() => {});
         }
       }
+      syncDock();
       updateHud();
     });
   }
@@ -1886,6 +2198,13 @@
     clearTimeout(toastHideTimer);
     clearTimeout(mouseHoldTimer);
     clearTimeout(deviceChangeTimer);
+    clearInterval(dockInterval);
+    if (dockObserver) {
+      try { dockObserver.disconnect(); } catch {}
+      dockObserver = null;
+    }
+    dockObservedEl = null;
+    clearJoinedChat();
     for (const conn of [...activeConns.keys()]) {
       try { terra.tcp.close(conn).catch(() => {}); } catch {}
     }
