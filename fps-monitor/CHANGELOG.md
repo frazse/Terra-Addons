@@ -1,3 +1,7 @@
+## 0.3.1
+- Match Biketerra's in-ride HUD styling (`--overlay-4`, borderless, `--font` Overpass & `--font-mono` tabular numerals, `--white-4`/`--white-3` labels, no `backdrop-filter`) and scale all dimensions in `rem` with Biketerra's Text Size setting
+- Reserve fixed `rem` slot widths per enabled metric so the FPS box stays a constant width as numbers fluctuate (resizing only when metrics are toggled)
+
 ## 0.3.0
 - Display `base/framegen fps` when frame generation is active
 - Add CPU/GPU hardware telemetry & Biketerra 3D engine render/scene stats

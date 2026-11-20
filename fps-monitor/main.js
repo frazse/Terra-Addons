@@ -54,6 +54,7 @@ const memEl = $k('mem');
 const resEl = $k('res');
 
 const wraps = {
+  fps: $w('fps'),
   low1: $w('low1'),
   ft: $w('ft'),
   stalls: $w('stalls'),
@@ -128,6 +129,9 @@ const computeFramegenFps = (baseFps) => {
 };
 
 const renderFps = (baseFps) => {
+  const fg = latestPerf && latestPerf.framegen;
+  const fgOn = Boolean(fg && fg.active);
+  wraps.fps.classList.toggle('fg-active', fgOn);
   if (baseFps == null) {
     fpsEl.textContent = '--';
     return;
@@ -165,6 +169,7 @@ const renderPerfStats = (p) => {
       cpuEl.textContent = val;
       cpuLblEl.textContent = lbl;
       cpuTempEl.textContent = sub;
+      wraps.cpu.classList.toggle('has-sub', Boolean(sub));
       wraps.cpu.style.display = '';
     } else {
       wraps.cpu.style.display = 'none';
@@ -202,6 +207,8 @@ const renderPerfStats = (p) => {
       gpuEl.textContent = val;
       gpuLblEl.textContent = lbl;
       gpuTempEl.textContent = sub;
+      wraps.gpu.classList.toggle('has-sub', Boolean(sub) && !sub.includes('proc'));
+      wraps.gpu.classList.toggle('sub-wide', sub.includes('proc'));
       wraps.gpu.style.display = '';
     } else {
       wraps.gpu.style.display = 'none';
@@ -373,9 +380,15 @@ const syncLongTaskObserver = () => {
     try { longTaskObs.disconnect(); } catch {}
     longTaskObs = null;
   }
-  if (!S.show_stalls || typeof PerformanceObserver === 'undefined') return;
+  if (!S.show_stalls || typeof PerformanceObserver === 'undefined') {
+    wraps.stalls.classList.remove('has-longtask');
+    return;
+  }
   const supported = PerformanceObserver.supportedEntryTypes;
-  if (!Array.isArray(supported) || !supported.includes('longtask')) return;
+  if (!Array.isArray(supported) || !supported.includes('longtask')) {
+    wraps.stalls.classList.remove('has-longtask');
+    return;
+  }
   try {
     longTaskObs = new PerformanceObserver((list) => {
       const now = performance.now();
@@ -384,8 +397,10 @@ const syncLongTaskObserver = () => {
       }
     });
     longTaskObs.observe({ type: 'longtask', buffered: false });
+    wraps.stalls.classList.add('has-longtask');
   } catch {
     longTaskObs = null;
+    wraps.stalls.classList.remove('has-longtask');
   }
 };
 syncLongTaskObserver();
@@ -408,7 +423,7 @@ const getRenderResolution = () => {
 const updatePosition = () => {
   if (!running) return;
   const shotBtn = document.querySelector('button.shot-tab, .shot-tab');
-  let targetLeft = BASE_LEFT;
+  let nextLeft = '';
   if (shotBtn) {
     const r = shotBtn.getBoundingClientRect();
     const cs = getComputedStyle(shotBtn);
@@ -417,11 +432,10 @@ const updatePosition = () => {
       const top = elRect.height > 0 ? elRect.top : 10;
       const bottom = elRect.height > 0 ? elRect.bottom : 50;
       if (r.bottom > top && r.top < bottom && r.left < 420) {
-        targetLeft = Math.max(BASE_LEFT, Math.ceil(r.right + 8));
+        nextLeft = `${Math.max(BASE_LEFT, Math.ceil(r.right + 8))}px`;
       }
     }
   }
-  const nextLeft = `${targetLeft}px`;
   if (el.style.left !== nextLeft) el.style.left = nextLeft;
 };
 
@@ -496,7 +510,9 @@ const updateExtraMetrics = (now, delta, count) => {
 
   if (S.show_render_ms && hookedEngine) {
     rcpuEl.textContent = renderCpuCount > 0 ? (renderCpuSum / renderCpuCount).toFixed(1) : '--';
-    rgpuEl.textContent = gpuQueueCount > 0 ? `· ${(gpuQueueSum / gpuQueueCount).toFixed(1)} gpu` : '';
+    const rgpuText = gpuQueueCount > 0 ? `· ${(gpuQueueSum / gpuQueueCount).toFixed(1)} gpu` : '';
+    rgpuEl.textContent = rgpuText;
+    wraps.rm.classList.toggle('has-sub', Boolean(rgpuText));
     renderCpuSum = 0;
     renderCpuCount = 0;
     gpuQueueSum = 0;
@@ -518,7 +534,9 @@ const updateExtraMetrics = (now, delta, count) => {
     const trisText = formatTris(tris);
     if (trisText) subParts.push(trisText);
     if (memMb != null) subParts.push(`${memMb}MB`);
-    trisEl.textContent = subParts.length ? `· ${subParts.join(' · ')}` : '';
+    const trisOut = subParts.length ? `· ${subParts.join(' · ')}` : '';
+    trisEl.textContent = trisOut;
+    wraps.scene.classList.toggle('has-sub', Boolean(trisOut));
   }
 
   if (S.show_memory && performance.memory) {

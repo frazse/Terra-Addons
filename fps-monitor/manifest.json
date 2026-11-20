@@ -1,7 +1,7 @@
 {
   "id": "fps-monitor",
   "name": "FPS Monitor",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "category": "HUD",
   "description": "Compact performance overlay for FPS, frame time, 1% lows, hitches, CPU/GPU usage & temps, render times, scene stats, JS memory, and resolution.",
   "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],

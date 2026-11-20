@@ -1,11 +1,74 @@
 #terra-fps-stats {
-position: fixed; z-index: 1; display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap;
-top: 10px; left: 10px; padding: 6px 12px; border-radius: 10px;
-user-select: none; pointer-events: none; transition: left .15s ease;
-background: rgba(15, 17, 21, .72); color: #fff; font: 600 15px system-ui, sans-serif;
-backdrop-filter: blur(6px);
+  position: fixed;
+  z-index: 1;
+  top: max(0.5rem, env(safe-area-inset-top));
+  left: max(0.5rem, env(safe-area-inset-left));
+  display: flex;
+  row-gap: 0.25rem;
+  column-gap: 0.45rem;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 0.46rem 0.55rem 0.3rem;
+  border-radius: var(--radius-md, 0.5rem);
+  background-color: var(--overlay-4, rgba(0, 0, 0, 0.53));
+  color: #fff;
+  font-family: var(--font, "Overpass", system-ui, -apple-system, sans-serif);
+  font-size: 0.9rem;
+  line-height: 1;
+  text-shadow: var(--hud-text-shadow, 1px 1px 2px var(--overlay-4, rgba(0, 0, 0, 0.5)));
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: none;
+  transition: left 0.15s ease;
 }
-#terra-fps-stats > span { display: inline-flex; align-items: baseline; white-space: nowrap; }
-#terra-fps-stats small { font-weight: 400; opacity: .6; margin-left: 3px; }
-#terra-fps-stats small.sub { font-size: 11px; opacity: .5; margin-left: 4px; }
-#terra-fps-stats .v { font-size: 20px; font-variant-numeric: tabular-nums; }
+#terra-fps-stats > span {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  white-space: nowrap;
+}
+#terra-fps-stats .v {
+  font-family: var(--font-mono, "Overpass Mono", monospace);
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  color: #fff;
+  line-height: 1;
+}
+#terra-fps-stats small {
+  font-family: var(--font, "Overpass", system-ui, -apple-system, sans-serif);
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1;
+  color: var(--white-4, rgba(255, 255, 255, 0.78));
+  margin-left: 0.18rem;
+}
+#terra-fps-stats small.sub {
+  font-family: var(--font-mono, "Overpass Mono", monospace);
+  font-size: 0.7rem;
+  font-weight: 400;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--white-3, rgba(255, 255, 255, 0.58));
+  margin-left: 0.22rem;
+}
+
+/* Fixed slot widths per enabled metric so the box never jitters and gaps stay even */
+#terra-fps-stats [data-wrap="fps"] { min-width: 3.8rem; }
+#terra-fps-stats [data-wrap="fps"].fg-active { min-width: 6.8rem; }
+#terra-fps-stats [data-wrap="low1"] { min-width: 5.1rem; }
+#terra-fps-stats [data-wrap="ft"] { min-width: 6.9rem; }
+#terra-fps-stats [data-wrap="stalls"] { min-width: 4.0rem; }
+#terra-fps-stats [data-wrap="stalls"].has-longtask { min-width: 6.2rem; }
+#terra-fps-stats [data-wrap="cpu"] { min-width: 4.4rem; }
+#terra-fps-stats [data-wrap="cpu"].has-sub { min-width: 5.8rem; }
+#terra-fps-stats [data-wrap="gpu"] { min-width: 4.4rem; }
+#terra-fps-stats [data-wrap="gpu"].has-sub { min-width: 5.8rem; }
+#terra-fps-stats [data-wrap="gpu"].sub-wide { min-width: 8.6rem; }
+#terra-fps-stats [data-wrap="rm"] { min-width: 4.0rem; }
+#terra-fps-stats [data-wrap="rm"].has-sub { min-width: 7.9rem; }
+#terra-fps-stats [data-wrap="scene"] { min-width: 5.4rem; }
+#terra-fps-stats [data-wrap="scene"].has-sub { min-width: 11.4rem; }
+#terra-fps-stats [data-wrap="mem"] { min-width: 4.3rem; }
+#terra-fps-stats [data-wrap="res"] { min-width: 7.7rem; }
