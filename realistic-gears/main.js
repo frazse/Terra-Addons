@@ -246,8 +246,9 @@ nativeGearEl: null
             const r = targetBox.getBoundingClientRect();
             const centerX = r.left + r.width / 2;
             const bottomPx = Math.max(8, Math.round(window.innerHeight - r.bottom));
-            const leftPx = Math.max(8, Math.min(window.innerWidth - 228, Math.round(centerX - 110)));
             hudEl.style.display = 'block';
+            const hudW = hudEl.offsetWidth || 292;
+            const leftPx = Math.max(8, Math.min(window.innerWidth - hudW - 8, Math.round(centerX - hudW / 2)));
             hudEl.style.bottom = `${bottomPx}px`;
             hudEl.style.left = `${leftPx}px`;
             hudEl.style.top = 'auto';
@@ -657,8 +658,8 @@ nativeGearEl: null
       position: fixed;
       z-index: 99990;
       display: none;
-      width: 13.75rem;
-      padding: 0.45rem 0.65rem 0.5rem;
+      width: 18.25rem;
+      padding: 0.35rem 0.42rem;
       border-radius: var(--radius-md, 0.5rem);
       background-color: var(--overlay-4, rgba(0, 0, 0, 0.53));
       border: 1px solid transparent;
@@ -681,15 +682,34 @@ nativeGearEl: null
       border-color: var(--danger, #f28b82);
       transform: scale(0.98);
     }
+    .tg-body {
+      display: flex;
+      align-items: stretch;
+      gap: 0.4rem;
+    }
+    .tg-center {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+    }
+    .tg-side-col {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      width: 2.25rem;
+      flex-shrink: 0;
+    }
     .tg-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
       gap: 0.35rem;
-      padding-bottom: 0.28rem;
-      margin-bottom: 0.38rem;
+      padding-bottom: 0.18rem;
+      margin-bottom: 0.22rem;
       border-bottom: 1px solid var(--white-1, rgba(255, 255, 255, 0.09));
-      font-size: 0.65rem;
+      font-size: 0.62rem;
       font-weight: 600;
       letter-spacing: 0.04em;
       color: var(--white-3, rgba(255, 255, 255, 0.55));
@@ -697,7 +717,7 @@ nativeGearEl: null
     }
     .tg-warn {
       color: var(--danger, #f28b82);
-      font-size: 0.6rem;
+      font-size: 0.58rem;
       font-weight: 700;
     }
     .tg-cfg-btn {
@@ -707,9 +727,9 @@ nativeGearEl: null
       color: var(--white-3, rgba(255, 255, 255, 0.55));
       cursor: pointer;
       font-family: inherit;
-      font-size: 0.75rem;
+      font-size: 0.72rem;
       line-height: 1;
-      padding: 0.1rem 0.2rem;
+      padding: 0.08rem 0.18rem;
     }
     .tg-cfg-btn:hover {
       background: var(--white-2, rgba(255, 255, 255, 0.22));
@@ -719,12 +739,12 @@ nativeGearEl: null
       display: flex;
       justify-content: space-between;
       align-items: baseline;
-      gap: 0.4rem;
-      margin-bottom: 0.4rem;
+      gap: 0.35rem;
+      margin-bottom: 0.24rem;
     }
     .tg-gear-num {
       font-family: var(--font-mono, "Overpass Mono", monospace);
-      font-size: 1.4rem;
+      font-size: 1.3rem;
       font-weight: 700;
       font-variant-numeric: tabular-nums;
       letter-spacing: -0.04em;
@@ -733,26 +753,26 @@ nativeGearEl: null
     }
     .tg-teeth-badge {
       font-family: var(--font-mono, "Overpass Mono", monospace);
-      font-size: 0.78rem;
+      font-size: 0.75rem;
       font-weight: 700;
       font-variant-numeric: tabular-nums;
       color: var(--white-4, rgba(255, 255, 255, 0.85));
       background: var(--white-1, rgba(255, 255, 255, 0.09));
-      padding: 0.1rem 0.35rem;
+      padding: 0.08rem 0.32rem;
       border-radius: var(--radius-sm, 0.25rem);
     }
     .tg-ratio-badge {
       font-family: var(--font-mono, "Overpass Mono", monospace);
-      font-size: 0.72rem;
+      font-size: 0.7rem;
       font-variant-numeric: tabular-nums;
       color: var(--white-4, rgba(255, 255, 255, 0.75));
     }
     .tg-drivetrain {
       display: flex;
       align-items: flex-end;
-      gap: 0.6rem;
-      height: 2.35rem;
-      padding: 0.25rem 0.38rem;
+      gap: 0.55rem;
+      height: 1.9rem;
+      padding: 0.2rem 0.35rem;
       border-radius: var(--radius-sm, 0.25rem);
       background: var(--overlay-2, rgba(0, 0, 0, 0.28));
       box-sizing: border-box;
@@ -760,9 +780,9 @@ nativeGearEl: null
     .tg-front-rings {
       display: flex;
       align-items: flex-end;
-      gap: 0.25rem;
+      gap: 0.22rem;
       height: 100%;
-      padding-right: 0.5rem;
+      padding-right: 0.45rem;
       border-right: 1px solid var(--white-1, rgba(255, 255, 255, 0.12));
     }
     .tg-cassette-cogs {
@@ -795,29 +815,22 @@ nativeGearEl: null
       background: var(--danger, #f28b82) !important;
       box-shadow: 0 0 0.35rem color-mix(in oklab, var(--danger, #f28b82) 60%, transparent) !important;
     }
-    .tg-controls {
-      display: flex;
-      justify-content: space-between;
-      gap: 0.375rem;
-      margin-top: 0.4rem;
-    }
-    .tg-btn-group {
-      display: flex;
-      flex: 1;
-      gap: 0.2rem;
-      align-items: center;
-    }
     .tg-btn {
       flex: 1;
-      padding: 0.24rem 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.06rem;
+      padding: 0.18rem 0.1rem;
       border-radius: var(--radius-sm, 0.25rem);
       border: 0;
       background: var(--white-1, rgba(255, 255, 255, 0.08));
       color: var(--white-4, rgba(255, 255, 255, 0.8));
       font-family: inherit;
-      font-size: 0.65rem;
+      font-size: 0.6rem;
       font-weight: 700;
-      line-height: 1.2;
+      line-height: 1;
       cursor: pointer;
       text-align: center;
     }
@@ -825,10 +838,21 @@ nativeGearEl: null
       background: var(--white-2, rgba(255, 255, 255, 0.22));
       color: #fff;
     }
+    .tg-btn-arrow {
+      font-size: 0.58rem;
+      line-height: 1;
+    }
+    .tg-btn-lbl {
+      font-size: 0.58rem;
+      letter-spacing: 0.03em;
+      line-height: 1;
+    }
     .tg-btn-save {
+      flex-direction: row;
       background: var(--white-2, rgba(255, 255, 255, 0.2));
       color: #fff;
       padding: 0.28rem 0;
+      font-size: 0.65rem;
     }
     .tg-btn-save:hover {
       background: var(--success, #6dd44d);
@@ -838,8 +862,8 @@ nativeGearEl: null
       display: none;
       flex-direction: column;
       gap: 0.375rem;
-      margin-top: 0.4rem;
-      padding-top: 0.4rem;
+      margin-top: 0.38rem;
+      padding-top: 0.38rem;
       border-top: 1px solid var(--white-1, rgba(255, 255, 255, 0.1));
       font-size: 0.65rem;
     }
@@ -887,40 +911,42 @@ nativeGearEl: null
       hudEl.id = 'terra-gear-hud';
 
       hudEl.innerHTML = `
-      <div class="tg-header">
-      <span id="tg-spec-title">2x12 GRX</span>
-      <span id="tg-warn-label" class="tg-warn"></span>
-      <button type="button" id="tg-cfg-toggle" class="tg-cfg-btn" title="Configure Gears">✎</button>
-      </div>
-      <div class="tg-main-readout">
-      <span class="tg-gear-num" id="tg-gear-index">2-5</span>
-      <span class="tg-teeth-badge" id="tg-teeth-text">46×21T</span>
-      <span class="tg-ratio-badge" id="tg-ratio-text">2.19x</span>
-      </div>
-      <div class="tg-drivetrain">
-      <div class="tg-front-rings" id="tg-front-bars"></div>
-      <div class="tg-cassette-cogs" id="tg-rear-bars"></div>
-      </div>
-      <div class="tg-controls">
-      <div class="tg-btn-group">
-      <button type="button" class="tg-btn" id="tg-fd-down" title="Left Shifter Down (Small Ring)">FD ▼</button>
-      <button type="button" class="tg-btn" id="tg-fd-up" title="Left Shifter Up (Big Ring)">FD ▲</button>
-      </div>
-      <div class="tg-btn-group">
-      <button type="button" class="tg-btn" id="tg-rd-down" title="Right Shifter Easier (Larger Cog)">RD ◀</button>
-      <button type="button" class="tg-btn" id="tg-rd-up" title="Right Shifter Harder (Smaller Cog)">RD ▶</button>
-      </div>
+      <div class="tg-body">
+        <div class="tg-side-col tg-side-left">
+          <button type="button" class="tg-btn" id="tg-fd-up" title="Left Shifter Up (Big Ring)"><span class="tg-btn-arrow">▲</span><span class="tg-btn-lbl">FD</span></button>
+          <button type="button" class="tg-btn" id="tg-fd-down" title="Left Shifter Down (Small Ring)"><span class="tg-btn-lbl">FD</span><span class="tg-btn-arrow">▼</span></button>
+        </div>
+        <div class="tg-center">
+          <div class="tg-header">
+            <span id="tg-spec-title">2x12 GRX</span>
+            <span id="tg-warn-label" class="tg-warn"></span>
+            <button type="button" id="tg-cfg-toggle" class="tg-cfg-btn" title="Configure Gears">✎</button>
+          </div>
+          <div class="tg-main-readout">
+            <span class="tg-gear-num" id="tg-gear-index">2-5</span>
+            <span class="tg-teeth-badge" id="tg-teeth-text">46×21T</span>
+            <span class="tg-ratio-badge" id="tg-ratio-text">2.19x</span>
+          </div>
+          <div class="tg-drivetrain">
+            <div class="tg-front-rings" id="tg-front-bars"></div>
+            <div class="tg-cassette-cogs" id="tg-rear-bars"></div>
+          </div>
+        </div>
+        <div class="tg-side-col tg-side-right">
+          <button type="button" class="tg-btn" id="tg-rd-up" title="Right Shifter Harder (Smaller Cog)"><span class="tg-btn-arrow">▲</span><span class="tg-btn-lbl">RD</span></button>
+          <button type="button" class="tg-btn" id="tg-rd-down" title="Right Shifter Easier (Larger Cog)"><span class="tg-btn-lbl">RD</span><span class="tg-btn-arrow">▼</span></button>
+        </div>
       </div>
       <div class="tg-config-drawer" id="tg-config-drawer">
-      <div>
-      <div class="tg-field-lbl">Front Chainrings (Teeth):</div>
-      <input type="text" class="tg-input" id="tg-inp-front" value="${config.front.join(', ')}">
-      </div>
-      <div>
-      <div class="tg-field-lbl">Rear Cassette (Teeth):</div>
-      <input type="text" class="tg-input" id="tg-inp-rear" value="${config.rear.join(', ')}">
-      </div>
-      <button type="button" class="tg-btn tg-btn-save" id="tg-save-cfg">Save & Apply Drivetrain</button>
+        <div>
+          <div class="tg-field-lbl">Front Chainrings (Teeth):</div>
+          <input type="text" class="tg-input" id="tg-inp-front" value="${config.front.join(', ')}">
+        </div>
+        <div>
+          <div class="tg-field-lbl">Rear Cassette (Teeth):</div>
+          <input type="text" class="tg-input" id="tg-inp-rear" value="${config.rear.join(', ')}">
+        </div>
+        <button type="button" class="tg-btn tg-btn-save" id="tg-save-cfg">Save & Apply Drivetrain</button>
       </div>
       `;
 
