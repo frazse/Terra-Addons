@@ -1,4 +1,4 @@
-/* group-spectate v0.2.1
+/* group-spectate v0.3.0
  * Focuses Biketerra's camera on the mean position of a group of riders instead of a single rider.
  * - Ctrl+click a group header in Biketerra's rider list (or pick a live <25m cluster in the Group Cam panel).
  * - Automatically keeps btApp.riderController.focalRider on a rider inside the spectated group so 3D models & LOD stay loaded.
@@ -16,6 +16,7 @@
     trackMode: 'cluster',    // 'cluster' | 'dom'
     clusterRadius: 25,
     pullBackFactor: 1.6,
+    slideDuration: 0.7,      // seconds to smoothly slide on activate/deactivate/join/leave/focal-swap (0 = instant)
     smoothing: 0.14,
   };
   let S = Object.assign({}, DEFAULTS);
@@ -50,6 +51,8 @@
 
   const state = {
     active: false,
+    exiting: false,           // true while sliding smoothly back to single-rider framing after stop
+    anchorMode: 'pack',       // 'pack' | 'focal' (focal = always stay anchored on ego/focalRider's cluster)
     label: '',
     activatedAt: 0,
     seedNames: new Set(),     // originally clicked/selected rider names
@@ -57,8 +60,18 @@
     trackedNames: new Set(),  // current pack rider names (dynamic in cluster mode)
     trackedKeys: new Set(),   // current pack rider keys
     preferredRow: null,       // fallback DOM row from initial Ctrl+click
-    smoothCenter: null,       // { x, y, z }
-    smoothBack: 0,
+    smoothCenter: null,       // world-space { x, y, z } (= focalPos + smoothOffset)
+    smoothOffset: { x: 0, y: 0, z: 0 }, // displayed offset = trackOffset + slideCarry
+    smoothBack: 0,            // displayed pull-back = max(0, trackBack + slideCarry.back)
+    trackOffset: { x: 0, y: 0, z: 0 },  // steady-state relative offset filtered by S.smoothing
+    trackBack: 0,
+    trackVel: { x: 0, y: 0, z: 0, back: 0 },
+    slideCarry: { x: 0, y: 0, z: 0, back: 0 }, // event jump offset decaying smoothly over S.slideDuration
+    slideVel: { x: 0, y: 0, z: 0, back: 0 },
+    lastGroupSig: null,       // canonical member signature to detect activate/join/leave/mode change
+    lastFocalPos: null,       // previous frame's focalPos (to compensate on focal swap)
+    lastFocalRider: null,     // previous frame's focalRider reference
+    lastFrameAt: 0,           // performance.now() of previous camera frame
     lastMemberCount: 0,
     lastSpread: 0,
     focalLabel: '',
@@ -290,6 +303,68 @@
     if (!entries.length) return null;
 
     const radius = clamp(S.clusterRadius, 3, 200);
+
+    // Focal-anchored mode: always follow the <clusterRadius> group around the current ego/focalRider.
+    // Never switches focalRider away; if others leave or drop, the camera stays with ego/focalRider.
+    if (state.anchorMode === 'focal') {
+      const anchor = focalEntry || (rc.ego ? entries.find((e) => e.r === rc.ego) : null);
+      if (!anchor) return null;
+
+      const wakeR2 = (radius * 2.5) * (radius * 2.5);
+      let hasCulledNear = false;
+      const activeEntries = [];
+      for (const e of entries) {
+        if (!e.culled || e.r === anchor.r) {
+          activeEntries.push(e);
+          continue;
+        }
+        const dx = e.pos.x - anchor.pos.x;
+        const dy = e.pos.y - anchor.pos.y;
+        const dz = e.pos.z - anchor.pos.z;
+        if (dx * dx + dy * dy + dz * dz <= wakeR2) {
+          hasCulledNear = true;
+          activeEntries.push(e);
+        }
+      }
+      if (hasCulledNear) {
+        wakeGroupRiders(rc, entries);
+      }
+
+      const clusters = computeClusters(activeEntries, radius);
+      const selected = clusters.find((cl) => cl.some((m) => m.r === anchor.r)) || [anchor];
+
+      if (updateTracked) {
+        const nextKeys = new Set();
+        const nextNames = new Set();
+        for (const m of selected) {
+          if (m.key) nextKeys.add(m.key);
+          for (const n of m.names) {
+            if (n !== '__me__') nextNames.add(n);
+          }
+        }
+        state.trackedKeys = nextKeys;
+        state.trackedNames = nextNames;
+      }
+
+      const center = meanPos(selected);
+      let maxR = 0;
+      for (const m of selected) {
+        const d = Math.hypot(m.pos.x - center.x, m.pos.y - center.y, m.pos.z - center.z);
+        if (d > maxR) maxR = d;
+      }
+
+      return {
+        waitingForFocal: false,
+        focalPos: anchor.pos,
+        focalInSelected: true,
+        idealFocal: anchor,
+        selected,
+        center,
+        spread: maxR,
+        count: selected.length,
+      };
+    }
+
     const keyRef = S.trackMode === 'dom' ? state.seedKeys : state.trackedKeys;
     const nameRef = S.trackMode === 'dom' ? state.seedNames : state.trackedNames;
     const focalMatchesTarget = !!(focalEntry && entryMatches(focalEntry, keyRef, nameRef));
@@ -671,8 +746,35 @@
     }
   }
 
+  function resetAllCameraMotion() {
+    state.smoothCenter = null;
+    state.smoothOffset = { x: 0, y: 0, z: 0 };
+    state.smoothBack = 0;
+    state.trackOffset = { x: 0, y: 0, z: 0 };
+    state.trackBack = 0;
+    state.trackVel = { x: 0, y: 0, z: 0, back: 0 };
+    state.slideCarry = { x: 0, y: 0, z: 0, back: 0 };
+    state.slideVel = { x: 0, y: 0, z: 0, back: 0 };
+    state.lastGroupSig = null;
+    state.lastFocalPos = null;
+    state.lastFocalRider = null;
+    state.lastFrameAt = 0;
+  }
+
+  function resetCameraMotionIfIdle() {
+    if (!state.active && !state.exiting) {
+      resetAllCameraMotion();
+    } else {
+      // Mid-flight switch (e.g. pack <-> focal, or reactivating mid-exit): trigger a smooth slide
+      state.lastGroupSig = null;
+    }
+  }
+
   function activateGroup({ label, names, keys, clickRow, skipInitialClick }) {
+    resetCameraMotionIfIdle();
     state.active = true;
+    state.exiting = false;
+    state.anchorMode = 'pack';
     state.label = label || `${names.length} riders`;
     state.activatedAt = Date.now();
     state.seedNames = new Set((names || []).filter(Boolean));
@@ -680,8 +782,6 @@
     state.trackedNames = new Set((names || []).filter(Boolean));
     state.trackedKeys = new Set((keys || []).filter(Boolean));
     state.preferredRow = clickRow || findDomRowByNames(state.seedNames);
-    state.smoothCenter = null;
-    state.smoothBack = 0;
     state.lastFocalAttemptAt = 0;
     state.lastFocalDomAttemptAt = 0;
     state.lastFocalTargetKey = null;
@@ -710,11 +810,71 @@
     log('activated group spectate:', state.label, [...state.seedNames]);
   }
 
-  function stopGroupSpectate() {
-    state.active = false;
+  function isFocalEgo(rc) {
+    return !!(rc && rc.ego && (!rc.focalRider || rc.focalRider === rc.ego));
+  }
+
+  function activateFocalGroup() {
+    resetCameraMotionIfIdle();
+    state.active = true;
+    state.exiting = false;
+    state.anchorMode = 'focal';
+    state.activatedAt = Date.now();
+    state.seedNames = new Set();
+    state.seedKeys = new Set();
+    state.trackedNames = new Set();
+    state.trackedKeys = new Set();
     state.preferredRow = null;
-    state.smoothCenter = null;
-    state.smoothBack = 0;
+    state.lastFocalAttemptAt = 0;
+    state.lastFocalDomAttemptAt = 0;
+    state.lastFocalTargetKey = null;
+    document.querySelectorAll('.gs-group-active-hdr').forEach((el) => el.classList.remove('gs-group-active-hdr'));
+
+    const app = window.btApp;
+    const rc = app && app.riderController;
+    state.label = isFocalEgo(rc) ? 'My Group' : 'Focal Group';
+    if (rc) {
+      wakeGroupRiders(rc);
+      const grp = resolveTargetGroup(rc, { updateTracked: true });
+      if (grp) {
+        state.lastMemberCount = grp.count;
+        state.lastSpread = grp.spread;
+      }
+      const focal = rc.focalRider || rc.ego;
+      state.focalLabel = focal ? riderDisplayName(focal) : '';
+    }
+    syncUi();
+    log('activated focal-anchored group view:', state.focalLabel || state.label);
+  }
+
+  function toggleFocalGroup() {
+    if (state.active && state.anchorMode === 'focal') {
+      stopGroupSpectate();
+    } else {
+      activateFocalGroup();
+    }
+  }
+
+  function stopGroupSpectate() {
+    const dispX = state.smoothOffset.x;
+    const dispY = state.smoothOffset.y;
+    const dispZ = state.smoothOffset.z;
+    const dispBack = state.smoothBack;
+    const hasOffset = Math.hypot(dispX, dispY, dispZ) > 0.03 || Math.abs(dispBack) > 0.03;
+    const slideT = slideSmoothTime(S.slideDuration);
+    state.active = false;
+    state.exiting = hasOffset && slideT > 0.001;
+    state.anchorMode = 'pack';
+    state.preferredRow = null;
+    state.lastGroupSig = null;
+    if (state.exiting) {
+      state.trackOffset = { x: 0, y: 0, z: 0 };
+      state.trackBack = 0;
+      state.trackVel = { x: 0, y: 0, z: 0, back: 0 };
+      state.slideCarry = { x: dispX, y: dispY, z: dispZ, back: dispBack };
+    } else {
+      resetAllCameraMotion();
+    }
     state.lastMemberCount = 0;
     state.lastSpread = 0;
     state.focalLabel = '';
@@ -809,49 +969,206 @@
   let cleanedUp = false;
   let featureApp = null;
 
-  function computeShiftedWorldPos(origWp, bx, by, bz, grp) {
+  function nowMs() {
+    return (typeof performance !== 'undefined' && typeof performance.now === 'function')
+      ? performance.now()
+      : Date.now();
+  }
+
+  function trackSmoothTime(smoothingVal) {
+    const a = clamp(smoothingVal, 0.02, 1.0);
+    if (a >= 0.99) return 0; // 1.00 = locked/instant steady tracking (zero lag)
+    return Math.min(1.0, Math.max(0.015, 0.045 / Math.pow(a, 0.78) - 0.045));
+  }
+
+  function slideSmoothTime(slideDurSec) {
+    const d = clamp(slideDurSec, 0, 4.0);
+    if (d <= 0.01) return 0; // 0.0s = instant transitions
+    // Critically-damped spring reaches ~95% at ~2.37 * smoothTime -> 0.42 * d settles in ~d seconds
+    return d * 0.42;
+  }
+
+  function groupMemberSignature(grp) {
+    if (!grp) return '';
+    if (Array.isArray(grp.selected) && grp.selected.length) {
+      const ids = grp.selected.map((m, idx) => m.key || (m.r ? String(riderIdOf(m.r) || idx) : String(idx)));
+      ids.sort();
+      return `${S.framingMode}:${ids.join('|')}`;
+    }
+    return `${S.framingMode}:n:${grp.count || 0}`;
+  }
+
+  // Analytical critically-damped spring (C1 continuous velocity, zero overshoot, framerate-independent)
+  function smoothDampScalar(current, target, vel, key, smoothTime, dt) {
+    if (smoothTime <= 0.001) {
+      vel[key] = 0;
+      return target;
+    }
+    const omega = 2 / smoothTime;
+    const x = omega * dt;
+    const exp = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+    const change = current - target;
+    const temp = (vel[key] + omega * change) * dt;
+    vel[key] = (vel[key] - omega * temp) * exp;
+    return target + (change + temp) * exp;
+  }
+
+  function computeFrameDt(overrideDt) {
+    if (typeof overrideDt === 'number' && Number.isFinite(overrideDt) && overrideDt > 0) {
+      return Math.min(0.1, Math.max(0.001, overrideDt));
+    }
+    const now = nowMs();
+    const dt = state.lastFrameAt > 0 ? (now - state.lastFrameAt) / 1000 : (1 / 60);
+    state.lastFrameAt = now;
+    return Math.min(0.1, Math.max(0.001, dt));
+  }
+
+  function computeShiftedWorldPos(origWp, bx, by, bz, grp, overrideDt) {
+    const dt = computeFrameDt(overrideDt);
+    const slideT = slideSmoothTime(S.slideDuration);
+
+    // Smoothly slide back to single-rider framing after stopGroupSpectate()
+    if (!grp) {
+      state.slideCarry.x = smoothDampScalar(state.slideCarry.x, 0, state.slideVel, 'x', slideT, dt);
+      state.slideCarry.y = smoothDampScalar(state.slideCarry.y, 0, state.slideVel, 'y', slideT, dt);
+      state.slideCarry.z = smoothDampScalar(state.slideCarry.z, 0, state.slideVel, 'z', slideT, dt);
+      state.slideCarry.back = smoothDampScalar(state.slideCarry.back, 0, state.slideVel, 'back', slideT, dt);
+
+      state.smoothOffset.x = state.slideCarry.x;
+      state.smoothOffset.y = state.slideCarry.y;
+      state.smoothOffset.z = state.slideCarry.z;
+      state.smoothBack = Math.max(0, state.slideCarry.back);
+
+      const rem = Math.hypot(state.slideCarry.x, state.slideCarry.y, state.slideCarry.z);
+      if (rem < 0.03 && Math.abs(state.slideCarry.back) < 0.03) {
+        state.exiting = false;
+        resetAllCameraMotion();
+        return origWp;
+      }
+
+      const back = state.smoothBack;
+      return {
+        x: origWp.x + state.smoothOffset.x + bx * back,
+        y: origWp.y + state.smoothOffset.y + by * back,
+        z: origWp.z + state.smoothOffset.z + bz * back,
+      };
+    }
+
+    const trackT = trackSmoothTime(S.smoothing);
     state.lastMemberCount = grp.count;
     state.lastSpread = grp.spread;
     const rc = window.btApp && window.btApp.riderController;
-    state.focalLabel = rc && rc.focalRider ? riderDisplayName(rc.focalRider) : '';
+    const focal = rc && (rc.focalRider || rc.ego);
+    state.focalLabel = focal ? riderDisplayName(focal) : '';
 
-    const alpha = clamp(S.smoothing, 0.02, 1.0);
-    if (!state.smoothCenter) {
-      state.smoothCenter = { ...grp.center };
-    } else {
-      const jumpDist = Math.hypot(
-        grp.center.x - state.smoothCenter.x,
-        grp.center.y - state.smoothCenter.y,
-        grp.center.z - state.smoothCenter.z
-      );
-      if (jumpDist > 120) {
-        // Snap immediately when jumping to a distant group instead of flying across terrain
-        state.smoothCenter = { ...grp.center };
-      } else {
-        state.smoothCenter.x += (grp.center.x - state.smoothCenter.x) * alpha;
-        state.smoothCenter.y += (grp.center.y - state.smoothCenter.y) * alpha;
-        state.smoothCenter.z += (grp.center.z - state.smoothCenter.z) * alpha;
-      }
-    }
-
+    const targetOffX = grp.center.x - grp.focalPos.x;
+    const targetOffY = grp.center.y - grp.focalPos.y;
+    const targetOffZ = grp.center.z - grp.focalPos.z;
     const targetBack = S.framingMode === 'auto'
       ? Math.max(0, grp.spread * clamp(S.pullBackFactor, 0.2, 5.0) - 1.2)
       : 0;
-    state.smoothBack += (targetBack - state.smoothBack) * alpha;
 
-    const shiftX = state.smoothCenter.x - grp.focalPos.x;
-    const shiftY = state.smoothCenter.y - grp.focalPos.y;
-    const shiftZ = state.smoothCenter.z - grp.focalPos.z;
+    let prevDispX = state.smoothOffset.x;
+    let prevDispY = state.smoothOffset.y;
+    let prevDispZ = state.smoothOffset.z;
+    let prevDispBack = state.smoothBack;
+    let teleported = false;
+    let focalSwapped = false;
+
+    // Compensate when focalRider switches so the camera stays world-continuous
+    // (or snap cleanly when teleporting to a distant group > 120m away).
+    if (state.lastFocalPos) {
+      const fdx = grp.focalPos.x - state.lastFocalPos.x;
+      const fdy = grp.focalPos.y - state.lastFocalPos.y;
+      const fdz = grp.focalPos.z - state.lastFocalPos.z;
+      const focalJump = Math.hypot(fdx, fdy, fdz);
+      const riderSwapped = !!(focal && state.lastFocalRider && focal !== state.lastFocalRider);
+      if (focalJump > 120) {
+        teleported = true;
+        resetAllCameraMotion();
+        prevDispX = 0; prevDispY = 0; prevDispZ = 0; prevDispBack = 0;
+      } else if (riderSwapped || (!focal && focalJump > 4)) {
+        focalSwapped = true;
+        prevDispX -= fdx;
+        prevDispY -= fdy;
+        prevDispZ -= fdz;
+      }
+    }
+    state.lastFocalPos = { x: grp.focalPos.x, y: grp.focalPos.y, z: grp.focalPos.z };
+    state.lastFocalRider = focal || null;
+
+    const sig = groupMemberSignature(grp);
+    const membershipChanged = sig !== state.lastGroupSig;
+    state.lastGroupSig = sig;
+
+    if (teleported) {
+      state.trackOffset = { x: targetOffX, y: targetOffY, z: targetOffZ };
+      state.trackBack = targetBack;
+      state.trackVel = { x: 0, y: 0, z: 0, back: 0 };
+      state.slideCarry = { x: 0, y: 0, z: 0, back: 0 };
+      state.slideVel = { x: 0, y: 0, z: 0, back: 0 };
+    } else if (membershipChanged || focalSwapped) {
+      // Activation, rider join/leave, group switch, or focal swap:
+      // snap tracked baseline to the new group target and glide the visual delta via slideCarry.
+      state.trackOffset.x = targetOffX;
+      state.trackOffset.y = targetOffY;
+      state.trackOffset.z = targetOffZ;
+      state.trackBack = targetBack;
+      state.trackVel = { x: 0, y: 0, z: 0, back: 0 };
+      if (slideT > 0.001) {
+        state.slideCarry.x = prevDispX - targetOffX;
+        state.slideCarry.y = prevDispY - targetOffY;
+        state.slideCarry.z = prevDispZ - targetOffZ;
+        state.slideCarry.back = prevDispBack - targetBack;
+      } else {
+        state.slideCarry = { x: 0, y: 0, z: 0, back: 0 };
+        state.slideVel = { x: 0, y: 0, z: 0, back: 0 };
+      }
+    } else {
+      // Steady membership: track live relative drift with S.smoothing (1.0 = locked, zero shake)
+      state.trackOffset.x = smoothDampScalar(state.trackOffset.x, targetOffX, state.trackVel, 'x', trackT, dt);
+      state.trackOffset.y = smoothDampScalar(state.trackOffset.y, targetOffY, state.trackVel, 'y', trackT, dt);
+      state.trackOffset.z = smoothDampScalar(state.trackOffset.z, targetOffZ, state.trackVel, 'z', trackT, dt);
+      state.trackBack = smoothDampScalar(state.trackBack, targetBack, state.trackVel, 'back', trackT, dt);
+    }
+
+    // Smoothly decay any transition slideCarry toward 0 over S.slideDuration
+    if (
+      Math.abs(state.slideCarry.x) > 1e-4 ||
+      Math.abs(state.slideCarry.y) > 1e-4 ||
+      Math.abs(state.slideCarry.z) > 1e-4 ||
+      Math.abs(state.slideCarry.back) > 1e-4 ||
+      Math.abs(state.slideVel.x) > 1e-4 ||
+      Math.abs(state.slideVel.y) > 1e-4 ||
+      Math.abs(state.slideVel.z) > 1e-4 ||
+      Math.abs(state.slideVel.back) > 1e-4
+    ) {
+      state.slideCarry.x = smoothDampScalar(state.slideCarry.x, 0, state.slideVel, 'x', slideT, dt);
+      state.slideCarry.y = smoothDampScalar(state.slideCarry.y, 0, state.slideVel, 'y', slideT, dt);
+      state.slideCarry.z = smoothDampScalar(state.slideCarry.z, 0, state.slideVel, 'z', slideT, dt);
+      state.slideCarry.back = smoothDampScalar(state.slideCarry.back, 0, state.slideVel, 'back', slideT, dt);
+    }
+
+    state.smoothOffset.x = state.trackOffset.x + state.slideCarry.x;
+    state.smoothOffset.y = state.trackOffset.y + state.slideCarry.y;
+    state.smoothOffset.z = state.trackOffset.z + state.slideCarry.z;
+    state.smoothBack = Math.max(0, state.trackBack + state.slideCarry.back);
+
+    state.smoothCenter = {
+      x: grp.focalPos.x + state.smoothOffset.x,
+      y: grp.focalPos.y + state.smoothOffset.y,
+      z: grp.focalPos.z + state.smoothOffset.z,
+    };
 
     // Move strictly along the camera backward axis so smoothCenter remains centered in the viewport
     const back = state.smoothBack;
-    const pulledY = origWp.y + shiftY + by * back;
+    const pulledY = origWp.y + state.smoothOffset.y + by * back;
     const safeY = back > 0 ? Math.max(pulledY, state.smoothCenter.y + 0.6) : pulledY;
 
     return {
-      x: origWp.x + shiftX + bx * back,
+      x: origWp.x + state.smoothOffset.x + bx * back,
       y: safeY,
-      z: origWp.z + shiftZ + bz * back,
+      z: origWp.z + state.smoothOffset.z + bz * back,
     };
   }
 
@@ -867,7 +1184,7 @@
       if (
         cleanedUp ||
         inEngineRender ||
-        !state.active ||
+        (!state.active && !state.exiting) ||
         state.hideFocalRider ||
         !params ||
         !params.worldPosition ||
@@ -876,6 +1193,14 @@
       ) {
         return prevCamUpdate.call(this, params);
       }
+
+      if (!state.active && state.exiting) {
+        const r = params.rotation;
+        const newWp = computeShiftedWorldPos(params.worldPosition, r[6], r[7], r[8], null);
+        camShiftedThisFrame = true;
+        return prevCamUpdate.call(this, { ...params, worldPosition: newWp });
+      }
+
       const app = window.btApp;
       const rc = app && app.riderController;
       if (!rc) return prevCamUpdate.call(this, params);
@@ -930,7 +1255,7 @@
       const alreadyShifted = camShiftedThisFrame;
       camShiftedThisFrame = false;
 
-      if (alreadyShifted || !state.active || state.hideFocalRider || !cam || typeof cam.update !== 'function' || !cam.view) {
+      if (alreadyShifted || (!state.active && !state.exiting) || state.hideFocalRider || !cam || typeof cam.update !== 'function' || !cam.view) {
         inEngineRender = true;
         try {
           return prevRender.call(this, fs, rq);
@@ -940,29 +1265,31 @@
       }
 
       // Fallback path (e.g. first frame before cam.update ran, or synthetic render calls)
-      const app = window.btApp;
-      const rc = app && app.riderController;
-      if (!rc) {
-        return prevRender.call(this, fs, rq);
-      }
-
       let grp = null;
-      try {
-        grp = resolveTargetGroup(rc, { updateTracked: true });
-      } catch {
-        return prevRender.call(this, fs, rq);
-      }
-      if (grp && grp.waitingForFocal && grp.focalCandidate) {
-        const cand = grp.focalCandidate;
-        setTimeout(() => { try { ensureFocalInGroup(rc, cand, false); } catch {} }, 0);
-        return prevRender.call(this, fs, rq);
-      }
-      if (!grp || !grp.center || !grp.focalPos) {
-        return prevRender.call(this, fs, rq);
-      }
-      if (!grp.focalInSelected && grp.idealFocal) {
-        const cand = grp.idealFocal;
-        setTimeout(() => { try { ensureFocalInGroup(rc, cand, false); } catch {} }, 0);
+      if (state.active) {
+        const app = window.btApp;
+        const rc = app && app.riderController;
+        if (!rc) {
+          return prevRender.call(this, fs, rq);
+        }
+
+        try {
+          grp = resolveTargetGroup(rc, { updateTracked: true });
+        } catch {
+          return prevRender.call(this, fs, rq);
+        }
+        if (grp && grp.waitingForFocal && grp.focalCandidate) {
+          const cand = grp.focalCandidate;
+          setTimeout(() => { try { ensureFocalInGroup(rc, cand, false); } catch {} }, 0);
+          return prevRender.call(this, fs, rq);
+        }
+        if (!grp || !grp.center || !grp.focalPos) {
+          return prevRender.call(this, fs, rq);
+        }
+        if (!grp.focalInSelected && grp.idealFocal) {
+          const cand = grp.idealFocal;
+          setTimeout(() => { try { ensureFocalInGroup(rc, cand, false); } catch {} }, 0);
+        }
       }
 
       const v = cam.view;
@@ -1059,6 +1386,14 @@
   const pullBackVal = document.createElement('span');
   pullBackVal.className = 'gs-val';
 
+  const slideSlider = document.createElement('input');
+  slideSlider.type = 'range';
+  slideSlider.min = '0';
+  slideSlider.max = '2.5';
+  slideSlider.step = '0.1';
+  const slideVal = document.createElement('span');
+  slideVal.className = 'gs-val';
+
   const smoothSlider = document.createElement('input');
   smoothSlider.type = 'range';
   smoothSlider.min = '0.02';
@@ -1111,13 +1446,56 @@
   pullLbl.textContent = 'Pull-back scale';
   pullRow.append(pullLbl, pullBackSlider, pullBackVal);
 
+  const slideRow = document.createElement('div');
+  slideRow.className = 'gs-range-row';
+  const slideLbl = document.createElement('label');
+  slideLbl.textContent = 'Slide speed';
+  slideRow.append(slideLbl, slideSlider, slideVal);
+
   const smoothRow = document.createElement('div');
   smoothRow.className = 'gs-range-row';
   const smoothLbl = document.createElement('label');
   smoothLbl.textContent = 'Smoothing';
   smoothRow.append(smoothLbl, smoothSlider, smoothVal);
 
-  panel.append(head, hint, statusEl, framingSeg, trackSeg, gapRow, pullRow, smoothRow, groupsWrap, stopBtn);
+  // ---- Focal-anchored Group View pill (mounted to the left of `Group Cam` inside `.people-status`) ----
+  const GROUP_VIEW_SVG =
+    '<svg class="gs-ego-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<circle cx="12" cy="8" r="3"></circle>' +
+    '<path d="M6.5 19v-1.2a4.5 4.5 0 0 1 4.5-4.5h2a4.5 4.5 0 0 1 4.5 4.5V19"></path>' +
+    '<circle cx="5.2" cy="10.2" r="2.1"></circle>' +
+    '<path d="M1.8 19v-.8a3.2 3.2 0 0 1 3.2-3.2h.5"></path>' +
+    '<circle cx="18.8" cy="10.2" r="2.1"></circle>' +
+    '<path d="M22.2 19v-.8a3.2 3.2 0 0 0-3.2-3.2h-.5"></path>' +
+    '</svg>';
+
+  const egoChip = document.createElement('button');
+  egoChip.type = 'button';
+  egoChip.className = 'list-pill hud-pill bg-dark gs-chip gs-ego-chip gs-chip-hidden';
+  egoChip.setAttribute('aria-label', 'Group View (follow current rider)');
+  egoChip.setAttribute('aria-pressed', 'false');
+  egoChip.title = 'Group View — follow group around current rider (LB + Right Power)';
+  egoChip.innerHTML = GROUP_VIEW_SVG;
+  const egoChipCount = document.createElement('span');
+  egoChipCount.className = 'gs-ego-count';
+  egoChipCount.textContent = '';
+  egoChip.append(egoChipCount);
+  egoChip.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleFocalGroup();
+  });
+
+  const egoPanelBtn = document.createElement('button');
+  egoPanelBtn.type = 'button';
+  egoPanelBtn.className = 'gs-btn gs-ego-btn';
+  egoPanelBtn.textContent = 'Follow Current Rider\u2019s Group';
+  egoPanelBtn.addEventListener('click', (e) => {
+    if (e && typeof e.stopPropagation === 'function') e.stopPropagation();
+    toggleFocalGroup();
+    refreshClustersList();
+  });
+
+  panel.append(head, hint, statusEl, egoPanelBtn, framingSeg, trackSeg, gapRow, pullRow, slideRow, smoothRow, groupsWrap, stopBtn);
   document.body.append(panel);
 
   function findPeopleStatus() {
@@ -1131,13 +1509,20 @@
     if (cleanedUp) return;
     const statusBar = findPeopleStatus();
     if (statusBar) {
+      statusBar.classList.add('gs-people-status');
+      const zone = statusBar.closest ? statusBar.closest('.hud-zone.zone-people') : null;
+      if (zone) zone.classList.add('gs-people-zone');
       chip.classList.remove('gs-chip-floating', 'gs-chip-hidden');
+      egoChip.classList.remove('gs-chip-floating', 'gs-chip-hidden');
       if (chip.parentElement !== statusBar) {
         if (typeof statusBar.prepend === 'function') {
           statusBar.prepend(chip);
         } else {
           statusBar.append(chip);
         }
+      }
+      if (egoChip.parentElement !== statusBar || egoChip.nextElementSibling !== chip) {
+        statusBar.insertBefore(egoChip, chip);
       }
       return;
     }
@@ -1147,6 +1532,7 @@
     }
     chip.classList.add('gs-chip-floating');
     chip.classList.toggle('gs-chip-hidden', !window.btApp);
+    if (egoChip.parentElement) egoChip.remove();
   }
 
   function positionPanel() {
@@ -1185,7 +1571,7 @@
     if (!panel.classList.contains('open')) return;
     if (e.ctrlKey || e.metaKey) return;
     const path = typeof e.composedPath === 'function' ? e.composedPath() : null;
-    if ((path && (path.includes(panel) || path.includes(chip))) || panel.contains(e.target) || chip.contains(e.target)) {
+    if ((path && (path.includes(panel) || path.includes(chip) || path.includes(egoChip))) || panel.contains(e.target) || chip.contains(e.target) || egoChip.contains(e.target)) {
       return;
     }
     setPanelOpen(false);
@@ -1224,21 +1610,64 @@
     pullBackVal.textContent = S.pullBackFactor.toFixed(1) + 'x';
   });
   pullBackSlider.addEventListener('change', () => saveSetting('pullBackFactor', Number(pullBackSlider.value)));
+  slideSlider.addEventListener('input', () => {
+    S.slideDuration = Number(slideSlider.value);
+    slideVal.textContent = S.slideDuration <= 0.01 ? 'Off' : S.slideDuration.toFixed(1) + ' s';
+  });
+  slideSlider.addEventListener('change', () => saveSetting('slideDuration', Number(slideSlider.value)));
   smoothSlider.addEventListener('input', () => {
     S.smoothing = Number(smoothSlider.value);
     smoothVal.textContent = S.smoothing.toFixed(2);
   });
   smoothSlider.addEventListener('change', () => saveSetting('smoothing', Number(smoothSlider.value)));
 
+  function getFocalGroupCount(rc) {
+    if (!rc) return null;
+    const entries = allBtRiders(rc);
+    if (!entries.length) return null;
+    const anchor = entries.find((e) => e.isFocal) || (rc.ego ? entries.find((e) => e.r === rc.ego) : null);
+    if (!anchor) return null;
+    const radius = clamp(S.clusterRadius, 3, 200);
+    const activeEntries = entries.filter((e) => !e.culled || e.r === anchor.r);
+    const clusters = computeClusters(activeEntries, radius);
+    const cl = clusters.find((c) => c.some((m) => m.r === anchor.r));
+    return cl ? cl.length : 1;
+  }
+
   function syncUi() {
-    chip.classList.toggle('active', state.active);
-    chipLbl.textContent = state.active
+    const rc = window.btApp && window.btApp.riderController;
+    const isFocalMode = state.active && state.anchorMode === 'focal';
+    const isPackMode = state.active && state.anchorMode === 'pack';
+    const egoAnchored = isFocalEgo(rc);
+    if (isFocalMode) {
+      state.label = egoAnchored ? 'My Group' : 'Focal Group';
+    }
+    const focalCount = isFocalMode
+      ? (state.lastMemberCount || getFocalGroupCount(rc) || 1)
+      : getFocalGroupCount(rc);
+
+    chip.classList.toggle('active', isPackMode);
+    chipLbl.textContent = isPackMode
       ? `Group \u00b7 ${state.lastMemberCount || '?'}`
       : 'Group Cam';
+
+    egoChip.classList.toggle('active', isFocalMode);
+    egoChip.setAttribute('aria-pressed', isFocalMode ? 'true' : 'false');
+    egoChipCount.textContent = focalCount != null ? String(focalCount) : '';
+    const countLabel = focalCount != null ? `${focalCount} rider${focalCount === 1 ? '' : 's'}` : 'current rider';
+    egoChip.title = isFocalMode
+      ? `Group View ON (${countLabel} around ${state.focalLabel || 'current rider'}) \u2014 click to exit`
+      : `Group View (${countLabel}) \u2014 follow group around current rider (LB + Right Power)`;
+
+    egoPanelBtn.classList.toggle('on', isFocalMode);
+    egoPanelBtn.textContent = isFocalMode
+      ? `Following ${egoAnchored ? 'My' : 'Focal'} Group (${focalCount || 1})`
+      : `Follow ${egoAnchored ? 'My' : 'Focal'} Group${focalCount != null ? ` (${focalCount})` : ''}`;
+
     const focalTxt = state.focalLabel ? ` \u00b7 focal: ${state.focalLabel}` : '';
     statusEl.classList.toggle('active', state.active);
     statusEl.textContent = state.active
-      ? `${state.label} \u00b7 ${state.lastMemberCount} riders${focalTxt} \u00b7 ${state.lastSpread.toFixed(1)} m radius \u00b7 +${state.smoothBack.toFixed(1)} m`
+      ? `${state.label} \u00b7 ${state.lastMemberCount} rider${state.lastMemberCount === 1 ? '' : 's'}${focalTxt} \u00b7 ${state.lastSpread.toFixed(1)} m radius \u00b7 +${state.smoothBack.toFixed(1)} m`
       : 'Inactive \u2014 watching single rider normally.';
     framingFixedBtn.classList.toggle('on', S.framingMode === 'fixed');
     framingAutoBtn.classList.toggle('on', S.framingMode === 'auto');
@@ -1249,6 +1678,9 @@
     pullBackSlider.value = String(clamp(S.pullBackFactor, 0.5, 4.0));
     pullBackVal.textContent = clamp(S.pullBackFactor, 0.5, 4.0).toFixed(1) + 'x';
     pullRow.style.display = S.framingMode === 'auto' ? '' : 'none';
+    const slideSec = clamp(S.slideDuration, 0, 2.5);
+    slideSlider.value = String(slideSec);
+    slideVal.textContent = slideSec <= 0.01 ? 'Off' : slideSec.toFixed(1) + ' s';
     smoothSlider.value = String(clamp(S.smoothing, 0.02, 1.0));
     smoothVal.textContent = clamp(S.smoothing, 0.02, 1.0).toFixed(2);
     stopBtn.style.display = state.active ? '' : 'none';
@@ -1279,7 +1711,7 @@
       }
       const btn = document.createElement('button');
       btn.type = 'button';
-      const isCurrent = state.active && keys.some((k) => state.trackedKeys.has(k));
+      const isCurrent = state.active && state.anchorMode === 'pack' && keys.some((k) => state.trackedKeys.has(k));
       btn.className = 'gs-btn gs-group-btn' + (isCurrent ? ' on' : '');
       const hasFocal = cl.some((m) => m.isFocal);
       const firstLabel = cl.map((m) => {
@@ -1305,6 +1737,31 @@
     });
   }
 
+  let unsubBusToggleEgo = null;
+  try {
+    if (terra.bus && typeof terra.bus.on === 'function') {
+      unsubBusToggleEgo = terra.bus.on('group-spectate:toggle-ego', () => {
+        if (!cleanedUp) toggleFocalGroup();
+      });
+    }
+  } catch {}
+
+  function exportHelpersForTests() {
+    return {
+      state,
+      settings: S,
+      resolveTargetGroup: (rc, opts) => resolveTargetGroup(rc, opts),
+      computeShiftedWorldPos: (origWp, bx, by, bz, grp, dt) => computeShiftedWorldPos(origWp, bx, by, bz, grp, dt),
+      activateGroup: (opts) => activateGroup(opts),
+      activateFocalGroup: () => activateFocalGroup(),
+      toggleFocalGroup: () => toggleFocalGroup(),
+      stopGroupSpectate: () => stopGroupSpectate(),
+      ensureChipMounted: () => ensureChipMounted(),
+      syncUi: () => syncUi(),
+    };
+  }
+  window.__terraGroupSpectateHelpers = exportHelpersForTests;
+
   syncUi();
 
   const watchTimer = setInterval(() => {
@@ -1321,15 +1778,26 @@
 
     if (state.active && rc) {
       const grp = resolveTargetGroup(rc, { updateTracked: false });
-      if (grp && grp.waitingForFocal && grp.focalCandidate) {
-        ensureFocalInGroup(rc, grp.focalCandidate, false);
-      } else if (grp && !grp.focalInSelected && grp.idealFocal) {
-        ensureFocalInGroup(rc, grp.idealFocal, false);
+      if (state.anchorMode !== 'focal') {
+        if (grp && grp.waitingForFocal && grp.focalCandidate) {
+          ensureFocalInGroup(rc, grp.focalCandidate, false);
+        } else if (grp && !grp.focalInSelected && grp.idealFocal) {
+          ensureFocalInGroup(rc, grp.idealFocal, false);
+        }
       }
-      state.focalLabel = rc.focalRider ? riderDisplayName(rc.focalRider) : '';
+      const focal = rc.focalRider || rc.ego;
+      state.focalLabel = focal ? riderDisplayName(focal) : '';
     }
 
-    if (state.active || panel.classList.contains('open')) syncUi();
+    if (state.active || panel.classList.contains('open')) {
+      syncUi();
+    } else if (rc) {
+      const cnt = getFocalGroupCount(rc);
+      egoChipCount.textContent = cnt != null ? String(cnt) : '';
+      if (cnt != null) {
+        egoChip.title = `Group View (${cnt} rider${cnt === 1 ? '' : 's'}) \u2014 follow group around current rider (LB + Right Power)`;
+      }
+    }
     refreshClustersList();
 
     if (!app) return;
@@ -1356,8 +1824,12 @@
 
   terra.onCleanup(() => {
     cleanedUp = true;
+    state.active = false;
+    state.exiting = false;
+    state.lastFocalRider = null;
     clearTimeout(quickMountTimer);
     clearInterval(watchTimer);
+    try { unsubBusToggleEgo && unsubBusToggleEgo(); } catch {}
     document.removeEventListener('click', onCaptureClick, true);
     document.removeEventListener('click', onDocOutsideClick, false);
     window.removeEventListener('keydown', onKeyDown, true);
@@ -1366,6 +1838,8 @@
     window.removeEventListener('resize', onResize);
     document.body.classList.remove('gs-ctrl-held');
     document.querySelectorAll('.gs-group-active-hdr').forEach((el) => el.classList.remove('gs-group-active-hdr'));
+    document.querySelectorAll('.gs-people-status').forEach((el) => el.classList.remove('gs-people-status'));
+    document.querySelectorAll('.gs-people-zone').forEach((el) => el.classList.remove('gs-people-zone'));
     document.querySelectorAll('[data-gs-group-header]').forEach((el) => el.removeAttribute('data-gs-group-header'));
     try {
       if (hookedCam && prevCamUpdate && hookedCam.update === wrappedCamUpdate) {
@@ -1377,7 +1851,8 @@
         hookedEng.render = prevRender;
       }
     } catch {}
-    try { chip.remove(); panel.remove(); } catch {}
+    try { chip.remove(); egoChip.remove(); panel.remove(); } catch {}
+    if (window.__terraGroupSpectateHelpers === exportHelpersForTests) delete window.__terraGroupSpectateHelpers;
     log('cleaned up');
   });
 })();

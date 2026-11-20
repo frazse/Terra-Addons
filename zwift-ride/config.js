@@ -81,6 +81,7 @@ DEF.layers = {
       y: [KEY('Cam:tilt_up', 'cam')],
       z: [KEY('Cam:orbit_left', 'cam')],
       onoff_l: [KEY('Cmd:open_terra', 'cmd')],
+      onoff_r: [KEY('Cmd:group_view', 'cmd')],
     },
     browse: {
       onoff_l: 'open_terra',
@@ -169,7 +170,23 @@ async function loadCfg() {
   activeProfile = await terra.storage.get('activeProfile', 'default');
   customProfiles = await terra.storage.get('customProfiles', {});
   const saved = await terra.storage.get('config', {});
-  return normalizeCfg(saved);
+  const next = normalizeCfg(saved);
+  try {
+    const migrated = await terra.storage.get('migratedGroupViewBindV1', false);
+    if (!migrated) {
+      if (next.mods && next.mods.powerup_l && next.layers && next.layers.powerup_l && next.layers.powerup_l.ride) {
+        const cur = next.layers.powerup_l.ride.onoff_r;
+        if (!cur || !cur.length) {
+          next.layers.powerup_l.ride.onoff_r = [KEY('Cmd:group_view', 'cmd')];
+          if (saved && Object.keys(saved).length > 0) {
+            await terra.storage.set('config', next);
+          }
+        }
+      }
+      await terra.storage.set('migratedGroupViewBindV1', true);
+    }
+  } catch {}
+  return next;
 }
 function saveCfg() {
   terra.storage.set('config', cfg).then(() => flash('Saved'), (e) => flash('Save failed: ' + e));

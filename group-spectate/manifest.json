@@ -1,10 +1,10 @@
 {
   "id": "group-spectate",
   "name": "Group Spectate",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "category": "Camera",
-  "description": "Spectate a group centered on the mean position of its riders. Ctrl+click a rider-list group header or pick a live <25m pack from the Group Cam pill.",
-  "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
+  "description": "Focus Biketerra's camera on the mean position of a group. Toggle focal-anchored Group View from the pill next to Group Cam (or Zwift Ride LB + Right Power) to follow your/focal rider's pack, or Ctrl+click a group header / pick any live pack.",
+  "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate*"],
   "js": ["main.js"],
   "css": ["style.css"],
   "enabled": true,
@@ -40,11 +40,18 @@
       "description": "How far to pull the camera back per meter of group radius in auto mode."
     },
     {
+      "key": "slideDuration",
+      "label": "Slide transition time (s)",
+      "type": "number",
+      "default": 0.7,
+      "description": "Duration in seconds to smoothly slide the camera on activate/deactivate, group switches, or when riders join/leave (0 = instant)."
+    },
+    {
       "key": "smoothing",
-      "label": "Center smoothing (0.02 - 1.0)",
+      "label": "Tracking smoothing (0.02 - 1.0)",
       "type": "number",
       "default": 0.14,
-      "description": "EMA smoothing factor per frame for group center & pull-back (lower = smoother, 1 = instant)."
+      "description": "Steady-state smoothing while riders drift inside the same group (lower = smoother, 1 = locked/zero lag)."
     }
   ]
 }

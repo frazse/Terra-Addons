@@ -1,3 +1,6 @@
+## 0.6.5
+- Add `group_view` command (`group-spectate:toggle-ego`) bound by default to `LB + Right Power` when LB modifier is enabled
+
 ## 0.6.4
 - Fix header pill for /badges navigation and add voice_ptt command
 

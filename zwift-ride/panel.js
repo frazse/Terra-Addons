@@ -139,6 +139,7 @@ const CMD_ACTIONS = [
   ['open_terra', 'Open Terra settings'],
   ['cycle_profile', 'Cycle Ride profile'],
   ['voice_ptt', 'Voice chat (Push-to-Talk)'],
+  ['group_view', 'Group view (follow focal rider)'],
 ];
 const CMD_LABEL = Object.fromEntries(CMD_ACTIONS);
 const ARROWS = { ArrowUp: '\u2191', ArrowDown: '\u2193', ArrowLeft: '\u2190', ArrowRight: '\u2192' };

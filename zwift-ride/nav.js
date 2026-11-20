@@ -4,6 +4,7 @@ const fire = (type, k) => {
   if (k.code === 'Cmd:open_terra') { if (type === 'keydown') terra.bus.emit('terra:open-addons', {}); return; }
   if (k.code === 'Cmd:cycle_profile') { if (type === 'keydown' && typeof cyclePreset === 'function') cyclePreset(); return; }
   if (k.code === 'Cmd:voice_ptt') { terra.bus.emit('voice-chat:ptt', { down: type === 'keydown' }); return; }
+  if (k.code === 'Cmd:group_view') { if (type === 'keydown') terra.bus.emit('group-spectate:toggle-ego', {}); return; }
   if (k.code.startsWith('Cam:')) { camSet(k.code.slice(4), type === 'keydown'); return; } // camera.js
   if (
     type === 'keydown' &&

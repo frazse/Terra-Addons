@@ -10,7 +10,7 @@
   line-height: inherit;
   border: 0;
   border-radius: var(--radius-sm, 0.25rem);
-  padding: 0.25rem 0.6rem;
+  padding: 0.25rem 0.5rem;
   background-color: var(--overlay-4, rgba(0, 0, 0, 0.53));
   white-space: nowrap;
   cursor: pointer;
@@ -228,3 +228,56 @@ body.gs-ctrl-held .hud-zone.zone-people .rider.is-group:hover {
   box-shadow: inset 2px 0 0 var(--focus, #ffcd7c) !important;
   background: color-mix(in oklab, var(--focus, #ffcd7c) 14%, var(--overlay-2, rgba(0, 0, 0, 0.25))) !important;
 }
+
+/* Keep Biketerra's `.people-status` bar on one crisp line without squeezing `< Indiv >` / `< W/kg >`
+ * when Group View + Group Cam pills sit beside `Public` during a ride; overflow extends cleanly left. */
+.hud-zone.zone-people.gs-people-zone,
+.hud-zone.zone-people:has(.people-status .gs-chip) {
+  overflow: visible;
+}
+.people-status.gs-people-status,
+.people-status:has(.gs-chip) {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  overflow: visible;
+}
+.people-status.gs-people-status > *,
+.people-status:has(.gs-chip) > * {
+  flex-shrink: 0;
+  white-space: nowrap;
+  flex-wrap: nowrap;
+  min-width: max-content;
+}
+
+/* Compact icon + rider count pill to the left of `Group Cam` in `.people-status` */
+.gs-ego-chip {
+  gap: 0.26rem;
+  padding: 0.25rem 0.45rem;
+}
+.gs-ego-chip .gs-ego-icon {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: none;
+  display: block;
+  pointer-events: none;
+}
+.gs-ego-chip .gs-ego-count {
+  font-family: var(--font-mono, "Overpass Mono", monospace);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.76rem;
+  line-height: 1;
+}
+.gs-ego-chip .gs-ego-count:empty {
+  display: none;
+}
+
+/* Quick toggle button inside `.gs-panel` */
+.gs-ego-btn {
+  width: 100%;
+  text-align: center;
+  font-weight: 600;
+}
+
