@@ -4,6 +4,7 @@
     approach_m: '250',
     zoom_elevation_svg: true,
     zoom_pad_m: '250',
+    replace_road_dials: true,
     flat_mode: 'compact',
     units: 'metric',
     opacity: 88,
@@ -53,6 +54,7 @@
   const graphClickCleanups = [];
 
   let dockedPanel = null;
+  let hiddenGaugesRow = null;
 
   const CSS = `
 /* Host elevation panel when Karoo Climber is docked seamlessly above .elev-graph */
@@ -62,6 +64,12 @@
   flex-direction: column;
   padding: 0;
   overflow: hidden;
+}
+.road-row.tr-cl-hide-gauges {
+  justify-content: center;
+}
+.road-row.tr-cl-hide-gauges > .gauge {
+  display: none !important;
 }
 .panel-profile.tr-cl-profile-host > .elev-graph {
   height: var(--hud-profile-h, min(6rem, 15svh));
@@ -126,21 +134,27 @@
 .tr-cl-head-l {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: 0.45rem;
   min-width: 0;
 }
 .tr-cl-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 1.42rem;
   font-family: var(--font-mono, "Overpass Mono", monospace);
   font-size: 0.65rem;
   font-weight: 700;
+  line-height: 1;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  padding: 0.12rem 0.4rem;
+  padding: 0.14rem 0.42rem 0;
   border-radius: var(--radius-sm, 0.25rem);
   background: var(--bt-a, #ff6262);
   color: #fff;
   text-shadow: none;
   flex-shrink: 0;
+  box-sizing: border-box;
 }
 .tr-cl-badge.approach {
   background: color-mix(in oklab, var(--bt-8, #ffa574) 85%, #000);
@@ -152,7 +166,9 @@
 }
 .tr-cl-title {
   font-weight: 700;
-  font-size: 0.82rem;
+  font-size: 0.84rem;
+  line-height: 1;
+  padding-top: 0.12rem;
   color: #fff;
   white-space: nowrap;
   overflow: hidden;
@@ -165,28 +181,108 @@
   flex-shrink: 0;
   margin-left: auto;
 }
-.tr-cl-grade {
-  font-family: var(--font-mono, "Overpass Mono", monospace);
-  font-size: 0.85rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  padding: 0.08rem 0.42rem;
+.tr-cl-draft {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.3rem;
+  min-width: 4.55rem;
+  height: 1.42rem;
+  padding: 0.14rem 0.42rem 0;
   border-radius: var(--radius-sm, 0.25rem);
-  background: var(--overlay-2, rgba(0, 0, 0, 0.3));
+  background: var(--overlay-3, rgba(0, 0, 0, 0.45));
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+.tr-cl-draft-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0%;
+  background: var(--success, #6dd44d);
+  opacity: 0.62;
+  transition: width 0.15s ease-out;
+  pointer-events: none;
+}
+.tr-cl-draft-lbl {
+  position: relative;
+  z-index: 1;
+  font-size: 0.58rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--white-4, rgba(255, 255, 255, 0.85));
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.88);
+}
+.tr-cl-draft-val {
+  position: relative;
+  z-index: 1;
+  font-family: var(--font-mono, "Overpass Mono", monospace);
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
   color: #fff;
-  border: 1px solid transparent;
+  min-width: 2ch;
+  text-align: right;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.92), 0 0 2px rgba(0, 0, 0, 0.78);
+}
+.tr-cl-grade {
+  position: relative;
+  overflow: hidden;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 4.1rem;
+  height: 1.42rem;
+  padding: 0.16rem 0.45rem 0;
+  border-radius: var(--radius-sm, 0.25rem);
+  background: var(--overlay-3, rgba(0, 0, 0, 0.45));
+  box-sizing: border-box;
+}
+.tr-cl-grade-fill {
+  position: absolute;
+  left: -40%;
+  top: 50%;
+  width: 180%;
+  height: 160%;
+  transform-origin: 50% 0%;
+  background: transparent;
+  opacity: 0.88;
+  transition: transform 0.2s ease-out, background-color 0.2s ease-out;
+  pointer-events: none;
+}
+.tr-cl-grade-val {
+  position: relative;
+  z-index: 1;
+  font-family: var(--font-mono, "Overpass Mono", monospace);
+  font-size: 0.84rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.92), 0 0 2px rgba(0, 0, 0, 0.78);
 }
 .tr-cl-list-btn {
   border: 0;
   background: var(--white-1, rgba(255, 255, 255, 0.09));
   color: var(--white-4, rgba(255, 255, 255, 0.8));
   border-radius: var(--radius-sm, 0.25rem);
-  padding: 0.16rem 0.45rem;
+  height: 1.42rem;
+  padding: 0.14rem 0.48rem 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-family: inherit;
   font-size: 0.72rem;
   font-weight: 600;
-  line-height: 1.2;
+  line-height: 1;
   cursor: pointer;
+  box-sizing: border-box;
 }
 .tr-cl-list-btn:hover { background: var(--white-2, rgba(255, 255, 255, 0.22)); color: #fff; }
 .tr-cl-list-btn.open { background: var(--white-2, rgba(255, 255, 255, 0.24)); color: #fff; }
@@ -196,13 +292,14 @@
   background: var(--white-1, rgba(255, 255, 255, 0.09));
   color: var(--white-4, rgba(255, 255, 255, 0.8));
   border-radius: var(--radius-sm, 0.25rem);
-  padding: 0.14rem 0.35rem;
+  padding: 0 0.35rem;
   min-width: 1.5rem;
-  height: 1.35rem;
+  height: 1.42rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  box-sizing: border-box;
 }
 .tr-cl-zoom-btn:hover { background: var(--white-2, rgba(255, 255, 255, 0.22)); color: #fff; }
 .tr-cl-zoom-btn.full { background: var(--white-2, rgba(255, 255, 255, 0.24)); color: var(--success, #6dd44d); }
@@ -212,20 +309,26 @@
 /* Inline Biketerra Rider-Stat KPI strip (horizontal in docked bar, 3-col grid in floating/preview) */
 .tr-cl-kpis {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.85rem;
   flex-wrap: wrap;
+}
+.tr-cl.tr-cl-docked .tr-cl-kpis {
+  padding-left: 0.6rem;
+  border-left: 1px solid var(--white-1, rgba(255, 255, 255, 0.14));
 }
 .tr-cl-kpi {
   display: inline-flex;
   align-items: baseline;
   gap: 0.28rem;
+  padding-top: 0.12rem;
   white-space: nowrap;
 }
 .tr-cl-kpi-val {
   font-family: var(--font-mono, "Overpass Mono", monospace);
-  font-size: 0.95rem;
+  font-size: 0.92rem;
   font-weight: 700;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.02em;
   color: #fff;
@@ -233,6 +336,7 @@
 .tr-cl-kpi-lbl {
   font-size: 0.72rem;
   font-weight: 400;
+  line-height: 1;
   color: var(--white-4, rgba(255, 255, 255, 0.75));
 }
 
@@ -307,6 +411,9 @@
   margin-top: 0;
   gap: 0.55rem;
   font-size: 0.76rem;
+  line-height: 1;
+  padding: 0.12rem 0 0 0.6rem;
+  border-left: 1px solid var(--white-1, rgba(255, 255, 255, 0.14));
   white-space: nowrap;
 }
 
@@ -393,6 +500,11 @@ svg.tr-elev-zoomed line {
       '<div class="tr-cl-drawer" style="display:none"></div>' +
       '<div class="tr-cl-head">' +
         '<div class="tr-cl-head-l">' +
+          '<span class="tr-cl-draft" style="display:none" title="Current draft">' +
+            '<span class="tr-cl-draft-fill"></span>' +
+            '<span class="tr-cl-draft-lbl">DRAFT</span>' +
+            '<span class="tr-cl-draft-val">0</span>' +
+          '</span>' +
           '<span class="tr-cl-badge flat">CLIMBER</span>' +
           '<span class="tr-cl-title">Waiting for route\u2026</span>' +
         '</div>' +
@@ -403,9 +515,12 @@ svg.tr-elev-zoomed line {
         '</div>' +
         '<div class="tr-cl-compact-row" style="display:none"></div>' +
         '<div class="tr-cl-head-r">' +
-          '<span class="tr-cl-grade">\u2014%</span>' +
           '<button type="button" class="tr-cl-zoom-btn" style="display:none" title="Zoom out to full route"></button>' +
           '<button type="button" class="tr-cl-list-btn" title="Upcoming & completed climbs">Climbs</button>' +
+          '<span class="tr-cl-grade" title="Current grade">' +
+            '<span class="tr-cl-grade-fill"></span>' +
+            '<span class="tr-cl-grade-val">\u2014%</span>' +
+          '</span>' +
         '</div>' +
       '</div>' +
       '<div class="tr-cl-body">' +
@@ -418,7 +533,12 @@ svg.tr-elev-zoomed line {
       root,
       badge: root.querySelector('.tr-cl-badge'),
       title: root.querySelector('.tr-cl-title'),
+      draft: root.querySelector('.tr-cl-draft'),
+      draftFill: root.querySelector('.tr-cl-draft-fill'),
+      draftVal: root.querySelector('.tr-cl-draft-val'),
       grade: root.querySelector('.tr-cl-grade'),
+      gradeFill: root.querySelector('.tr-cl-grade-fill'),
+      gradeVal: root.querySelector('.tr-cl-grade-val'),
       zoomBtn: root.querySelector('.tr-cl-zoom-btn'),
       listBtn: root.querySelector('.tr-cl-list-btn'),
       kpis: root.querySelector('.tr-cl-kpis'),
@@ -1639,17 +1759,94 @@ svg.tr-elev-zoomed line {
     ctx.fillRect(0, 0, 2, h);
   }
 
-  function setGradePill(el, g) {
-    if (g === null || g === undefined || !Number.isFinite(g)) {
-      el.textContent = '\u2014%';
-      el.style.color = '#fff';
-      el.style.borderColor = 'transparent';
+  function syncRoadGauges() {
+    const shouldHide =
+      !cleaned &&
+      Boolean(S.replace_road_dials) &&
+      ui.root.classList.contains('tr-cl-docked') &&
+      ui.root.style.display !== 'none';
+
+    const row = shouldHide && typeof document.querySelector === 'function'
+      ? document.querySelector('.zone-road .road-row, .road-row')
+      : null;
+
+    if (hiddenGaugesRow && hiddenGaugesRow !== row) {
+      try { hiddenGaugesRow.classList.remove('tr-cl-hide-gauges'); } catch {}
+      hiddenGaugesRow = null;
+    }
+    if (shouldHide && row) {
+      row.classList.add('tr-cl-hide-gauges');
+      hiddenGaugesRow = row;
+    } else if (hiddenGaugesRow) {
+      try { hiddenGaugesRow.classList.remove('tr-cl-hide-gauges'); } catch {}
+      hiddenGaugesRow = null;
+    }
+  }
+
+  function readLiveDraft(focal) {
+    if (typeof document.querySelector === 'function') {
+      const draftGauge = document.querySelector('.road-row .gauge.draft, .gauge.draft');
+      if (draftGauge) {
+        const valEl = draftGauge.querySelector ? draftGauge.querySelector('.gauge-value') : null;
+        const fillEl = draftGauge.querySelector ? draftGauge.querySelector('.gauge-fill') : null;
+        const rawTxt = valEl ? String(valEl.textContent || '').trim() : '';
+        const parsedVal = parseFloat(rawTxt);
+        const hStr = fillEl && fillEl.style ? String(fillEl.style.height || '') : '';
+        const hm = hStr.match(/(-?\d+(?:\.\d+)?)%/);
+        const pct = hm
+          ? clamp(parseFloat(hm[1]), 0, 100)
+          : (Number.isFinite(parsedVal) ? clamp(parsedVal, 0, 100) : 0);
+        const color = fillEl && fillEl.style && fillEl.style.backgroundColor ? fillEl.style.backgroundColor : '';
+        return {
+          text: rawTxt || String(Math.round(pct)),
+          pct,
+          color,
+        };
+      }
+    }
+    if (focal && focal.sim && Number.isFinite(focal.sim.draftFactor)) {
+      const pct = clamp(Math.round((1 - focal.sim.draftFactor) * 100), 0, 100);
+      return { text: String(pct), pct, color: '' };
+    }
+    return null;
+  }
+
+  function setDraftPill(els, draft) {
+    if (!els.draft) return;
+    if (!draft) {
+      els.draft.style.display = 'none';
       return;
     }
-    el.textContent = `${g >= 0 ? '+' : ''}${g.toFixed(1)}%`;
+    els.draft.style.display = '';
+    els.draftVal.textContent = draft.text;
+    els.draftFill.style.width = `${clamp(draft.pct, 0, 100).toFixed(1)}%`;
+    els.draftFill.style.backgroundColor = draft.color || '';
+  }
+
+  function readLiveGrade(fallbackGrade) {
+    if (typeof document.querySelector === 'function') {
+      const valEl = document.querySelector('.road-row .gauge.grade .gauge-value, .gauge.grade .gauge-value');
+      if (valEl) {
+        const parsed = parseFloat(String(valEl.textContent || '').trim());
+        if (Number.isFinite(parsed)) return parsed;
+      }
+    }
+    return fallbackGrade;
+  }
+
+  function setGradePill(els, g) {
+    if (g === null || g === undefined || !Number.isFinite(g)) {
+      els.gradeVal.textContent = '\u2014%';
+      els.gradeFill.style.backgroundColor = 'transparent';
+      els.gradeFill.style.transform = 'rotate(0deg)';
+      return;
+    }
+    els.gradeVal.textContent = `${g >= 0 ? '+' : ''}${g.toFixed(1)}%`;
     const col = karooGradeColor(g);
-    el.style.color = col;
-    el.style.borderColor = `color-mix(in oklab, ${col} 50%, transparent)`;
+    // True geometric slope angle atan(grade) scaled 2x so subtle gradients read clearly in the pill
+    const tiltDeg = -clamp((Math.atan(g / 100) * 180 / Math.PI) * 2.0, -28, 28);
+    els.gradeFill.style.backgroundColor = col;
+    els.gradeFill.style.transform = `rotate(${tiltDeg.toFixed(2)}deg)`;
   }
 
   function renderDrawerList(els, items, activeClimb) {
@@ -1692,13 +1889,15 @@ svg.tr-elev-zoomed line {
       els.badge.className = 'tr-cl-badge flat';
       els.badge.textContent = 'CLIMBER';
       els.title.textContent = 'Waiting for route\u2026';
-      setGradePill(els.grade, null);
+      setDraftPill(els, null);
+      setGradePill(els, null);
       els.zoomBtn.style.display = 'none';
       els.listBtn.style.display = 'none';
       els.kpis.style.display = 'none';
       els.body.style.display = 'none';
       els.compactRow.style.display = 'none';
       els.drawer.style.display = 'none';
+      if (!isPreview) syncRoadGauges();
       return;
     }
 
@@ -1706,7 +1905,8 @@ svg.tr-elev-zoomed line {
     els.listBtn.style.display = totalClimbs ? '' : 'none';
     els.listBtn.textContent = `Climbs (${totalClimbs})`;
     els.listBtn.classList.toggle('open', drawerListOpen);
-    setGradePill(els.grade, view.curGrade);
+    setDraftPill(els, view.draft);
+    setGradePill(els, view.curGrade);
 
     const approachThreshold = clamp(parseInt(S.approach_m, 10) || 250, 50, 5000);
     const padM = clamp(parseInt(S.zoom_pad_m, 10) || 250, 0, 5000);
@@ -1772,6 +1972,7 @@ svg.tr-elev-zoomed line {
     if (!isPreview && !isNearOrActive && !drawerListOpen && !inspectedClimbIndex) {
       if (S.flat_mode === 'hidden') {
         els.root.style.display = 'none';
+        syncRoadGauges();
         return;
       }
       if (S.flat_mode === 'compact') {
@@ -1791,6 +1992,7 @@ svg.tr-elev-zoomed line {
           els.title.textContent = totalClimbs ? 'Climbs Done' : 'Flat Route';
           els.compactRow.textContent = totalClimbs ? `All ${totalClimbs} climb(s) completed` : 'No climbs >= 400m @ 3%';
         }
+        syncRoadGauges();
         return;
       }
     }
@@ -1798,6 +2000,7 @@ svg.tr-elev-zoomed line {
     els.root.style.display = '';
     els.root.classList.remove('compact');
     els.compactRow.style.display = 'none';
+    if (!isPreview) syncRoadGauges();
 
     const showClimb = inspected ? inspected.climb : view.climb;
     if (!showClimb) {
@@ -1870,6 +2073,7 @@ svg.tr-elev-zoomed line {
       distLeft: lengthM * 0.62,
       ascentLeft: ascentLeftOnClimb(climb, 0.38),
       curGrade: 9.4,
+      draft: { text: '48', pct: 48, color: '' },
       allItems: [
         { climb: { index: 1, totalClimbs: 4, lengthM: 680, avgGrade: 5.2, ascentM: 35 }, distToStart: 0, done: true },
         { climb, distToStart: 0, done: false },
@@ -1893,6 +2097,7 @@ svg.tr-elev-zoomed line {
       const all = await terra.settings.all();
       S = { ...DEFAULTS, ...all };
       applyBoxStyle();
+      syncRoadGauges();
     } catch {}
   }
 
@@ -1915,6 +2120,8 @@ svg.tr-elev-zoomed line {
 
     const { curDist } = findFocalDistance(route, focal, prev);
     const live = sampleRawAtDist(route, curDist);
+    const curGrade = readLiveGrade(live.grade);
+    const draft = readLiveDraft(focal);
 
     let active = null;
     for (const c of cachedClimbs) {
@@ -1947,7 +2154,8 @@ svg.tr-elev-zoomed line {
         distIntoClimb,
         distLeft: Math.max(0, active.endDist - curDist),
         ascentLeft: ascentLeftOnClimb(active, frac),
-        curGrade: live.grade,
+        curGrade,
+        draft,
         allItems,
       });
     } else if (upcoming.length > 0) {
@@ -1959,7 +2167,8 @@ svg.tr-elev-zoomed line {
         climb: next.climb,
         activeClimb: null,
         distToStart: next.distToStart,
-        curGrade: live.grade,
+        curGrade,
+        draft,
         allItems,
       });
     } else {
@@ -1969,7 +2178,8 @@ svg.tr-elev-zoomed line {
         curDist,
         climb: null,
         activeClimb: null,
-        curGrade: live.grade,
+        curGrade,
+        draft,
         allItems,
       });
     }
@@ -1988,6 +2198,10 @@ svg.tr-elev-zoomed line {
     for (const off of graphClickCleanups) { try { off(); } catch {} }
     graphClickCleanups.length = 0;
     restoreElevationSvg(true);
+    if (hiddenGaugesRow) {
+      try { hiddenGaugesRow.classList.remove('tr-cl-hide-gauges'); } catch {}
+      hiddenGaugesRow = null;
+    }
     if (dockedPanel) {
       try { dockedPanel.classList.remove('tr-cl-profile-host'); } catch {}
       dockedPanel = null;

@@ -1,9 +1,9 @@
 {
   "id": "climb-profile",
   "name": "Karoo Climber",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "category": "HUD",
-  "description": "Hammerhead Karoo OS CLIMBER HUD integrated directly into Biketerra's elevation profile panel. Detects climbs, zooms the elevation SVG onto the active climb, and renders a crisp 500m fixed-segment Karoo ticker.",
+  "description": "Hammerhead Karoo OS CLIMBER HUD integrated directly into Biketerra's elevation profile panel with a tilted-slope grade indicator, live draft bar, climb SVG zoom, and 500m Karoo ticker.",
   "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
   "js": ["main.js"],
   "settings": [
@@ -37,6 +37,13 @@
       "default": "250",
       "options": ["100", "250", "500", "1000"],
       "description": "Extra metres shown before the climb base and after the summit when zoomed."
+    },
+    {
+      "key": "replace_road_dials",
+      "label": "Replace Biketerra Grade & Draft dials",
+      "type": "checkbox",
+      "default": true,
+      "description": "Hide Biketerra's native Grade and Draft circles above the elevation graph while docked and display them inside Karoo Climber."
     },
     {
       "key": "flat_mode",
