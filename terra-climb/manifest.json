@@ -1,0 +1,94 @@
+{
+  "id": "terra-climb",
+  "name": "Terra ClimbPro",
+  "version": "0.2.0",
+  "category": "HUD",
+  "description": "First-principles ClimbPro built for Terra: single-row docked HUD with climb categories (Cat 4–HC / Wall), VAM-based time to summit, time-adaptive shift-ahead callouts, conquered-mountain dimming, km-to-summit markers, and automatic crux/relief pins directly on Biketerra's zoomed elevation graph.",
+  "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
+  "js": ["main.js"],
+  "settings": [
+    {
+      "key": "sensitivity",
+      "label": "Climb detection sensitivity",
+      "type": "select",
+      "default": "all",
+      "options": ["all", "medium", "large"],
+      "description": "all (>=400m @ 3% or >=200m @ 6% walls), medium (Medium & Large), large (Large Only)."
+    },
+    {
+      "key": "graph_roadmap",
+      "label": "Mountain roadmap overlays on graph",
+      "type": "checkbox",
+      "default": true,
+      "description": "Dim conquered climb behind cursor and show km-to-summit ticks, steepest crux & relief breather pins, and checkered summit line on the zoomed graph."
+    },
+    {
+      "key": "shift_callout",
+      "label": "Time-adaptive shift-ahead callout",
+      "type": "checkbox",
+      "default": true,
+      "description": "Quiet header pill that appears only ~25s before a steep pitch jump, recovery relief, or summit."
+    },
+    {
+      "key": "show_eta",
+      "label": "Show VAM time-to-summit (ETA)",
+      "type": "checkbox",
+      "default": true,
+      "description": "Estimate remaining climbing time using smoothed vertical ascent rate (VAM)."
+    },
+    {
+      "key": "approach_m",
+      "label": "Approach pop-up distance (m)",
+      "type": "select",
+      "default": "250",
+      "options": ["150", "250", "500", "1000"],
+      "description": "Distance before a climb base where ClimbPro expands and zooms."
+    },
+    {
+      "key": "zoom_elevation_svg",
+      "label": "Zoom on-screen elevation graph",
+      "type": "checkbox",
+      "default": true,
+      "description": "Zoom Biketerra's elevation SVG onto the active or inspected climb and restore afterward."
+    },
+    {
+      "key": "zoom_pad_m",
+      "label": "Zoom padding before/after climb (m)",
+      "type": "select",
+      "default": "250",
+      "options": ["100", "250", "500", "1000"],
+      "description": "Extra metres shown before the climb start and past the summit when zoomed."
+    },
+    {
+      "key": "replace_road_dials",
+      "label": "Replace Biketerra Grade & Draft dials",
+      "type": "checkbox",
+      "default": true,
+      "description": "Hide Biketerra's native Grade and Draft circles while docked and show them inside Terra ClimbPro."
+    },
+    {
+      "key": "flat_mode",
+      "label": "Flat-road display",
+      "type": "select",
+      "default": "compact",
+      "options": ["compact", "expanded", "hidden"],
+      "description": "When not near or on a climb: show a compact summary bar, keep next climb expanded, or auto-hide."
+    },
+    {
+      "key": "units",
+      "label": "Units",
+      "type": "select",
+      "default": "metric",
+      "options": ["metric", "imperial"],
+      "description": "Metric (m/km) or Imperial (yd/mi, ft)."
+    },
+    {
+      "key": "opacity",
+      "label": "Floating fallback opacity (%)",
+      "type": "number",
+      "default": 88,
+      "description": "30 – 100 (only used if .panel-profile is hidden)"
+    }
+  ],
+  "enabled": true
+}
