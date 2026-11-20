@@ -5,6 +5,7 @@
     zoom_elevation_svg: true,
     zoom_pad_m: '250',
     replace_road_dials: true,
+    ticker_mode: 'always',
     flat_mode: 'compact',
     units: 'metric',
     opacity: 88,
@@ -13,9 +14,9 @@
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(+v) ? +v : lo));
 
   const SENSITIVITY_CFG = {
-    all:    { minLen: 400, minAvgGrade: 3.0, minScore: 1200 },
-    medium: { minLen: 450, minAvgGrade: 3.0, minScore: 3000 },
-    large:  { minLen: 500, minAvgGrade: 3.0, minScore: 7500 },
+    all:    { minLen: 400, minAvgGrade: 3.0, minScore: 1200, punchyMinLen: 200, punchyMinGrade: 6.0, punchyMinScore: 1500 },
+    medium: { minLen: 350, minAvgGrade: 3.0, minScore: 3000, punchyMinLen: 250, punchyMinGrade: 8.0, punchyMinScore: 2500 },
+    large:  { minLen: 500, minAvgGrade: 3.0, minScore: 7500, punchyMinLen: 500, punchyMinGrade: 3.0, punchyMinScore: 7500 },
   };
 
   let cachedRoute = null;
@@ -384,12 +385,12 @@
 .tr-cl-ticker-canvas {
   display: block;
   width: 100%;
-  height: 2.2rem;
+  height: 2.05rem;
   border-radius: var(--radius-sm, 0.25rem);
   background: var(--overlay-2, rgba(0, 0, 0, 0.28));
 }
 .tr-cl.tr-cl-docked .tr-cl-ticker-canvas {
-  height: 1.55rem;
+  height: 1.42rem;
 }
 
 /* Flat-road compact summary */
@@ -736,6 +737,9 @@ svg.tr-elev-zoomed line {
     if (g >= 2.0)  return '#4ade80';
     if (g >= -0.5) return '#94a3b8';
     return '#38bdf8';
+  }
+  function isDarkGradeBand(color) {
+    return color === '#ef4444' || color === '#a855f7';
   }
 
   /* ---------- Biketerra On-Screen Elevation SVG viewBox Zoom ---------- */
@@ -1457,7 +1461,8 @@ svg.tr-elev-zoomed line {
   function detectClimbs(route, sensKey) {
     const cfg = SENSITIVITY_CFG[sensKey] || SENSITIVITY_CFG.all;
     const totalLen = route.totalLen;
-    if (totalLen < cfg.minLen) return [];
+    const absMinLen = Math.min(cfg.minLen, cfg.punchyMinLen || cfg.minLen);
+    if (totalLen < absMinLen) return [];
 
     const STEP = 20;
     const m = Math.max(4, Math.floor(totalLen / STEP) + 1);
@@ -1469,62 +1474,187 @@ svg.tr-elev-zoomed line {
       gridRawY[i] = sampleRawAtDist(route, d).y;
     }
 
-    const gridY = new Float64Array(m);
-    gridY[0] = gridRawY[0];
-    gridY[m - 1] = gridRawY[m - 1];
-    for (let i = 1; i < m - 1; i++) {
-      gridY[i] = 0.25 * gridRawY[i - 1] + 0.5 * gridRawY[i] + 0.25 * gridRawY[i + 1];
+    // 1-pass smoothed elevation for clean ascent math; 2-pass smoothed elevation for slope/peak detection
+    const smoothPass = (src) => {
+      const out = new Float64Array(m);
+      out[0] = src[0];
+      out[m - 1] = src[m - 1];
+      for (let i = 1; i < m - 1; i++) {
+        out[i] = 0.25 * src[i - 1] + 0.5 * src[i] + 0.25 * src[i + 1];
+      }
+      return out;
+    };
+    const gridElev = smoothPass(gridRawY);
+    const gridY = smoothPass(gridElev);
+
+    // Local smoothed grade over +/-40m window (80m span)
+    const gridSlope = new Float32Array(m);
+    for (let i = 0; i < m; i++) {
+      const lo = Math.max(0, i - 2);
+      const hi = Math.min(m - 1, i + 2);
+      const span = Math.max(1, gridD[hi] - gridD[lo]);
+      gridSlope[i] = ((gridY[hi] - gridY[lo]) / span) * 100;
     }
 
-    const MAX_DIP_M = 10;
-    const MAX_FLAT_DIST_M = 240;
-    const MIN_START_RISE_M = 4;
+    const sampleElev = (d) => {
+      const clamped = clamp(d, 0, totalLen);
+      const fi = clamped / STEP;
+      const i0 = clamp(Math.floor(fi), 0, m - 1);
+      const i1 = Math.min(m - 1, i0 + 1);
+      const span = gridD[i1] - gridD[i0];
+      const t = span > 1e-6 ? clamp((clamped - gridD[i0]) / span, 0, 1) : 0;
+      return gridElev[i0] + (gridElev[i1] - gridElev[i0]) * t;
+    };
 
-    const rawClimbs = [];
-    let valleyIdx = 0;
-    let valleyY = gridY[0];
-    let inClimb = false;
-    let startIdx = 0;
+    // Stage 1: Grade-aware seed extraction (prevents long <2% false flats from swallowing real climbs)
+    const START_GRADE = 2.2;
+    const CONT_GRADE = 2.0;
+    const MAX_SEED_DIP_M = 8;
+    const MAX_SEED_FLAT_M = 200;
+
+    const seeds = [];
+    let inSeed = false;
+    let seedStart = 0;
     let peakIdx = 0;
     let peakY = gridY[0];
+    let lastActiveIdx = 0;
+    let runStart = -1;
 
-    const finalizeCandidate = (sIdx, pIdx) => {
+    const pushSeed = (sIdx, pIdx) => {
+      if (pIdx <= sIdx) return;
+      const len = gridD[pIdx] - gridD[sIdx];
+      const gain = gridElev[pIdx] - gridElev[sIdx];
+      if (len >= 80 && gain >= 3) {
+        seeds.push({ s: sIdx, e: pIdx });
+      }
+    };
+
+    for (let i = 0; i < m; i++) {
+      const y = gridY[i];
+      const sl = gridSlope[i];
+      if (!inSeed) {
+        if (sl >= START_GRADE) {
+          if (runStart < 0) runStart = Math.max(0, i - 1);
+          if (gridD[i] - gridD[runStart] >= 40 || y - gridY[runStart] >= 3) {
+            inSeed = true;
+            seedStart = runStart;
+            peakIdx = i;
+            peakY = y;
+            lastActiveIdx = i;
+          }
+        } else {
+          runStart = -1;
+        }
+      } else {
+        if (sl >= CONT_GRADE) {
+          lastActiveIdx = i;
+        }
+        if (y > peakY && (gridD[i] - gridD[lastActiveIdx]) <= 120) {
+          peakY = y;
+          peakIdx = i;
+        }
+        const drop = peakY - y;
+        const flatSpan = gridD[i] - gridD[lastActiveIdx];
+        if (drop >= MAX_SEED_DIP_M || flatSpan >= MAX_SEED_FLAT_M) {
+          pushSeed(seedStart, peakIdx);
+          inSeed = false;
+          runStart = sl >= START_GRADE ? Math.max(peakIdx, i - 1) : -1;
+        }
+      }
+    }
+    if (inSeed) pushSeed(seedStart, peakIdx);
+
+    // Stage 2: Merge adjacent seeds across brief flats/dips (benched / stepped climbs)
+    let merged = true;
+    while (merged && seeds.length > 1) {
+      merged = false;
+      for (let i = 0; i < seeds.length - 1; i++) {
+        const a = seeds[i];
+        const b = seeds[i + 1];
+        if (b.e <= a.e) {
+          seeds.splice(i + 1, 1);
+          merged = true;
+          break;
+        }
+        const gapLen = gridD[b.s] - gridD[a.e];
+        const lenA = gridD[a.e] - gridD[a.s];
+        const lenB = gridD[b.e] - gridD[b.s];
+        const gainA = gridElev[a.e] - gridElev[a.s];
+        const gainB = gridElev[b.e] - gridElev[b.s];
+        const combLen = gridD[b.e] - gridD[a.s];
+        const combGain = gridElev[b.e] - gridElev[a.s];
+        const combAvg = combLen > 0 ? (combGain / combLen) * 100 : 0;
+
+        let minGapY = gridY[a.e];
+        for (let k = Math.max(0, a.e); k <= Math.min(m - 1, b.s); k++) {
+          if (gridY[k] < minGapY) minGapY = gridY[k];
+        }
+        const gapDrop = Math.max(0, gridY[a.e] - minGapY);
+        const maxGap = Math.min(600, Math.max(250, 0.35 * (lenA + lenB)));
+        const maxDrop = Math.min(25, Math.max(12, 0.25 * (gainA + gainB)));
+
+        if (
+          gapLen <= maxGap &&
+          gapDrop <= maxDrop &&
+          combGain > Math.max(gainA, gainB) &&
+          combAvg >= Math.max(2.6, cfg.minAvgGrade - 0.3)
+        ) {
+          a.e = b.e;
+          seeds.splice(i + 1, 1);
+          merged = true;
+          break;
+        }
+      }
+    }
+
+    // Stage 3: Precision edge-trim, score-aware filter (incl. punchy kickers), and 50m segments
+    const rawClimbs = [];
+    const segM = isImp() ? 45.72 : 50;
+
+    for (const seed of seeds) {
+      let sIdx = seed.s;
+      let pIdx = seed.e;
+
       while (sIdx + 2 <= pIdx) {
         const segD = Math.max(1, gridD[sIdx + 2] - gridD[sIdx]);
         const segG = ((gridY[sIdx + 2] - gridY[sIdx]) / segD) * 100;
-        if (segG < 1.5) sIdx++;
+        if (segG < 2.0) sIdx++;
         else break;
       }
       while (pIdx - 2 >= sIdx) {
         const segD = Math.max(1, gridD[pIdx] - gridD[pIdx - 2]);
         const segG = ((gridY[pIdx] - gridY[pIdx - 2]) / segD) * 100;
-        if (segG < 0.5) pIdx--;
+        if (segG < 1.0) pIdx--;
         else break;
       }
-      if (pIdx <= sIdx) return;
+      if (pIdx <= sIdx) continue;
 
       const startDist = gridD[sIdx];
       const endDist = gridD[pIdx];
       const lengthM = endDist - startDist;
-      const startElev = gridRawY[sIdx];
-      const endElev = gridRawY[pIdx];
+      const startElev = gridElev[sIdx];
+      const endElev = gridElev[pIdx];
       const netGain = endElev - startElev;
       const avgGrade = lengthM > 0 ? (netGain / lengthM) * 100 : 0;
       const score = lengthM * avgGrade;
 
-      if (lengthM < cfg.minLen || avgGrade < cfg.minAvgGrade || score < cfg.minScore || netGain <= 0) return;
+      const passesStd = lengthM >= cfg.minLen && avgGrade >= cfg.minAvgGrade && score >= cfg.minScore;
+      const passesPunchy =
+        lengthM >= (cfg.punchyMinLen || cfg.minLen) &&
+        avgGrade >= (cfg.punchyMinGrade || cfg.minAvgGrade) &&
+        score >= (cfg.punchyMinScore || cfg.minScore);
+      if (!(passesStd || passesPunchy) || netGain <= 0) continue;
 
-      // Fixed 100m (or 100yd) Karoo segments anchored to climb startDist
-      const segM = isImp() ? 91.44 : 100;
+      // Climb-anchored 50m (or 50yd) segments so sharp ramps never get smeared across 100m boundaries
       const segments = [];
       let segStart = startDist;
       let segIdx = 0;
       while (segStart < endDist - 1) {
         let segEnd = Math.min(endDist, segStart + segM);
-        if (endDist - segEnd > 0 && endDist - segEnd < 12) segEnd = endDist;
+        if (endDist - segEnd > 0 && endDist - segEnd < 10) segEnd = endDist;
         const len = segEnd - segStart;
-        const y0 = sampleRawAtDist(route, segStart).y;
-        const y1 = sampleRawAtDist(route, segEnd).y;
+        const y0 = sampleElev(segStart);
+        const y1 = sampleElev(segEnd);
         const segGrade = ((y1 - y0) / Math.max(5, len)) * 100;
         segments.push({
           idx: segIdx,
@@ -1537,13 +1667,36 @@ svg.tr-elev-zoomed line {
         segIdx++;
       }
 
-      // Cumulative positive ascent table for smooth "Elev Left"
+      // Post-summit road preview (up to 500m / 500yd past the crest)
+      const postSegments = [];
+      const postLimit = Math.min(totalLen, endDist + 10 * segM);
+      let pStart = endDist;
+      let pSegIdx = 0;
+      while (pStart < postLimit - 1) {
+        let pEnd = Math.min(postLimit, pStart + segM);
+        if (postLimit - pEnd > 0 && postLimit - pEnd < 10) pEnd = postLimit;
+        const len = pEnd - pStart;
+        const y0 = sampleElev(pStart);
+        const y1 = sampleElev(pEnd);
+        const segGrade = ((y1 - y0) / Math.max(5, len)) * 100;
+        postSegments.push({
+          idx: pSegIdx,
+          offsetM: pStart - startDist,
+          lenM: len,
+          grade: segGrade,
+          color: karooGradeColor(segGrade),
+        });
+        pStart = pEnd;
+        pSegIdx++;
+      }
+
+      // Cumulative positive ascent table (smoothed elevation) for steady "Elev Left"
       const steps = 64;
       const cumAscent = new Float64Array(steps + 1);
-      let prevY = sampleRawAtDist(route, startDist).y;
+      let prevY = sampleElev(startDist);
       for (let k = 1; k <= steps; k++) {
         const d = startDist + (k / steps) * lengthM;
-        const y = sampleRawAtDist(route, d).y;
+        const y = sampleElev(d);
         const dy = y - prevY;
         cumAscent[k] = cumAscent[k - 1] + (dy > 0 ? dy : 0);
         prevY = y;
@@ -1559,39 +1712,10 @@ svg.tr-elev-zoomed line {
         ascentM: Math.max(netGain, cumAscent[steps]),
         avgGrade,
         segments,
+        postSegments,
         cumAscent,
       });
-    };
-
-    for (let i = 1; i < m; i++) {
-      const y = gridY[i];
-      if (!inClimb) {
-        if (y <= valleyY) {
-          valleyY = y;
-          valleyIdx = i;
-        } else if (y - valleyY >= MIN_START_RISE_M) {
-          inClimb = true;
-          startIdx = valleyIdx;
-          peakIdx = i;
-          peakY = y;
-        }
-      } else {
-        if (y > peakY) {
-          peakY = y;
-          peakIdx = i;
-        } else {
-          const drop = peakY - y;
-          const flatSpan = gridD[i] - gridD[peakIdx];
-          if (drop >= MAX_DIP_M || flatSpan >= MAX_FLAT_DIST_M) {
-            finalizeCandidate(startIdx, peakIdx);
-            inClimb = false;
-            valleyIdx = i;
-            valleyY = y;
-          }
-        }
-      }
     }
-    if (inClimb) finalizeCandidate(startIdx, peakIdx);
 
     const totalClimbs = rawClimbs.length;
     for (let i = 0; i < totalClimbs; i++) {
@@ -1680,15 +1804,15 @@ svg.tr-elev-zoomed line {
     return `${Math.round(m)} m`;
   }
 
-  // Smooth DPI-aware canvas-based 500m Karoo ticker with fixed segment colors & readable labels
+  // Smooth DPI-aware 500m upcoming gradient strip (50m resolution, merged color bands, summit + post-crest preview)
   function renderTickerCanvas(canvas, scTitle, scEnd, climb, distIntoClimb) {
     const unitTag = isImp() ? 'yd' : 'm';
-    scTitle.textContent = `Next ${500}${unitTag}`;
-    scEnd.textContent = `100${unitTag} fixed`;
+    scTitle.textContent = `Next 500${unitTag}`;
+    scEnd.textContent = `50${unitTag} bands`;
 
     const dpr = Math.min((typeof window !== 'undefined' && window.devicePixelRatio > 0) ? window.devicePixelRatio : 1, 2);
     const w = (canvas.clientWidth && canvas.clientWidth > 20) ? canvas.clientWidth : 318;
-    const h = (canvas.clientHeight && canvas.clientHeight > 10) ? canvas.clientHeight : 32;
+    const h = (canvas.clientHeight && canvas.clientHeight > 10) ? canvas.clientHeight : 24;
     const pw = Math.round(w * dpr);
     const ph = Math.round(h * dpr);
     if (canvas.width !== pw) canvas.width = pw;
@@ -1698,59 +1822,175 @@ svg.tr-elev-zoomed line {
     if (!ctx) return;
     if (typeof ctx.setTransform === 'function') ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
+
     if (!climb || !climb.segments || !climb.segments.length) return;
 
-    const segM = climb.segM || (isImp() ? 91.44 : 100);
-    const winSpan = 5 * segM;
+    const winSpan = isImp() ? 457.2 : 500;
     const winStart = distIntoClimb !== null && distIntoClimb > 0 ? clamp(distIntoClimb, 0, climb.lengthM) : 0;
     const winEnd = winStart + winSpan;
-    const compactBar = h < 30;
-    const pctPx = Math.max(10, Math.round(h * (compactBar ? 0.50 : 0.36)));
-    const distPx = Math.max(9, Math.round(h * (compactBar ? 0.40 : 0.27)));
+    const pctPx = Math.max(10, Math.round(h * 0.50));
 
-    for (const seg of climb.segments) {
-      const s0 = seg.offsetM;
-      const s1 = seg.offsetM + seg.lenM;
-      const v0 = Math.max(winStart, s0);
-      const v1 = Math.min(winEnd, s1);
-      if (v1 <= v0) continue;
+    const formatBandLen = (m) => {
+      if (isImp()) {
+        const yd = m / 0.9144;
+        if (yd >= 440) {
+          const mi = m / 1609.344;
+          return `${mi >= 1 ? mi.toFixed(1) : mi.toFixed(2)}mi`;
+        }
+        return `${Math.max(10, Math.round(yd / 10) * 10)}yd`;
+      }
+      if (m >= 1000) return `${(m / 1000).toFixed(1)}km`;
+      return `${Math.max(10, Math.round(m / 10) * 10)}m`;
+    };
 
-      const x0 = ((v0 - winStart) / winSpan) * w;
-      const x1 = ((v1 - winStart) / winSpan) * w;
-      const bw = x1 - x0;
-
-      ctx.fillStyle = seg.color;
-      ctx.fillRect(x0, 0, bw, h);
-
-      // Clean separator between segments
-      if (x1 < w - 0.5) {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-        ctx.fillRect(x1 - 1.5, 0, 1.5, h);
+    const buildMergedRuns = (segList) => {
+      // Merge contiguous same-color segments across the full list so each box knows its true length
+      const fullRuns = [];
+      for (const seg of segList) {
+        const s0 = seg.offsetM;
+        const s1 = seg.offsetM + seg.lenM;
+        const prev = fullRuns.length ? fullRuns[fullRuns.length - 1] : null;
+        if (prev && prev.color === seg.color && Math.abs(s0 - prev.s1) < 1) {
+          prev.segs.push(seg);
+          prev.s1 = s1;
+        } else {
+          fullRuns.push({ s0, s1, color: seg.color, segs: [seg] });
+        }
       }
 
-      // Draw fixed grade % centered inside the visible portion so it never slices in half
-      if (bw >= 24) {
-        const cx = x0 + bw / 2;
-        const pctTxt = `${Math.round(seg.grade)}%`;
-        const mark = Math.round(((seg.offsetM + seg.lenM) / segM) * 100);
-        ctx.fillStyle = '#09090b';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        if (compactBar) {
-          ctx.font = `700 ${pctPx}px "Overpass Mono", "Overpass", sans-serif`;
-          if (bw >= 72) {
-            ctx.fillText(`${pctTxt} \u00b7 ${mark}${unitTag}`, cx, h * 0.52);
-          } else {
-            ctx.fillText(pctTxt, cx, h * 0.52);
-          }
-        } else {
-          ctx.font = `700 ${pctPx}px "Overpass Mono", "Overpass", sans-serif`;
-          ctx.fillText(pctTxt, cx, h * 0.38);
-          if (bw >= 34) {
-            ctx.font = `600 ${distPx}px "Overpass Mono", "Overpass", sans-serif`;
-            ctx.fillText(`${mark}${unitTag}`, cx, h * 0.76);
+      const visible = [];
+      for (const run of fullRuns) {
+        const v0 = Math.max(winStart, run.s0);
+        const v1 = Math.min(winEnd, run.s1);
+        if (v1 <= v0) continue;
+        const remStart = Math.max(winStart, run.s0);
+        let gradeWeighted = 0;
+        let remLen = 0;
+        for (const seg of run.segs) {
+          const r0 = Math.max(remStart, seg.offsetM);
+          const r1 = seg.offsetM + seg.lenM;
+          if (r1 > r0) {
+            const dl = r1 - r0;
+            gradeWeighted += seg.grade * dl;
+            remLen += dl;
           }
         }
+        visible.push({
+          v0,
+          v1,
+          color: run.color,
+          remLen: Math.max(v1 - v0, remLen),
+          avgGrade: remLen > 0 ? gradeWeighted / remLen : 0,
+        });
+      }
+      return visible;
+    };
+
+    const drawRuns = (runs, alpha) => {
+      ctx.save();
+      if (alpha < 1) ctx.globalAlpha = alpha;
+      const lenPx = Math.max(9, Math.round(pctPx * 0.86));
+      const pctFont = `700 ${pctPx}px "Overpass Mono", "Overpass", sans-serif`;
+      const lenFont = `600 ${lenPx}px "Overpass Mono", "Overpass", sans-serif`;
+      const measureW = (txt, px) => (
+        typeof ctx.measureText === 'function'
+          ? ctx.measureText(txt).width
+          : txt.length * (px * 0.62)
+      );
+
+      for (let i = 0; i < runs.length; i++) {
+        const run = runs[i];
+        const x0 = ((run.v0 - winStart) / winSpan) * w;
+        const x1 = ((run.v1 - winStart) / winSpan) * w;
+        const bw = x1 - x0;
+
+        ctx.fillStyle = run.color;
+        ctx.fillRect(x0, 0, bw + 0.5, h);
+
+        if (i < runs.length - 1 && x1 < w - 0.5) {
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
+          ctx.fillRect(x1 - 1, 0, 1.5, h);
+        }
+
+        if (bw >= 24) {
+          const cx = x0 + bw / 2;
+          const pctTxt = `${Math.round(run.avgGrade)}%`;
+          const lenTxt = formatBandLen(run.remLen);
+
+          ctx.font = pctFont;
+          const pctW = measureW(pctTxt, pctPx);
+          ctx.font = lenFont;
+          const lenW = measureW(lenTxt, lenPx);
+
+          const darkBg = isDarkGradeBand(run.color);
+          const textY = h * 0.54;
+          const minGap = 3;
+          const maxGap = Math.max(6, Math.round(pctPx * 0.8));
+          const sidePad = 6;
+          const availGap = bw - sidePad - pctW - lenW;
+
+          ctx.textBaseline = 'middle';
+          if (availGap >= minGap) {
+            // Smoothly shrink gap between grade% and countdown before dropping countdown
+            const gap = clamp(availGap * 0.35, minGap, maxGap);
+            const totalW = pctW + gap + lenW;
+            const startX = cx - totalW / 2;
+            ctx.textAlign = 'left';
+
+            ctx.font = pctFont;
+            if (darkBg) {
+              ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+              ctx.fillText(pctTxt, startX, textY + 1);
+              ctx.fillStyle = '#ffffff';
+            } else {
+              ctx.fillStyle = '#09090b';
+            }
+            ctx.fillText(pctTxt, startX, textY);
+
+            ctx.font = lenFont;
+            const lenX = startX + pctW + gap;
+            if (darkBg) {
+              ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+              ctx.fillText(lenTxt, lenX, textY + 1.5);
+              ctx.fillStyle = 'rgba(255, 255, 255, 0.86)';
+            } else {
+              ctx.fillStyle = 'rgba(9, 9, 11, 0.78)';
+            }
+            ctx.fillText(lenTxt, lenX, textY + 0.5);
+          } else if (bw >= pctW + 4) {
+            ctx.font = pctFont;
+            ctx.textAlign = 'center';
+            if (darkBg) {
+              ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+              ctx.fillText(pctTxt, cx, textY + 1);
+              ctx.fillStyle = '#ffffff';
+            } else {
+              ctx.fillStyle = '#09090b';
+            }
+            ctx.fillText(pctTxt, cx, textY);
+          }
+        }
+      }
+      ctx.restore();
+    };
+
+    drawRuns(buildMergedRuns(climb.segments), 1);
+
+    if (climb.postSegments && climb.postSegments.length && winEnd > climb.lengthM) {
+      drawRuns(buildMergedRuns(climb.postSegments), 0.46);
+    }
+
+    // Crisp checkered summit marker when crest enters the 500m window
+    if (climb.lengthM > winStart && climb.lengthM < winEnd) {
+      const sx = ((climb.lengthM - winStart) / winSpan) * w;
+      const cell = Math.max(3, Math.round(h / 6));
+      for (let row = 0; row * cell < h; row++) {
+        const cy = row * cell;
+        const ch = Math.min(cell, h - cy);
+        ctx.fillStyle = (row % 2 === 0) ? '#ffffff' : '#09090b';
+        ctx.fillRect(sx - 2, cy, 2, ch);
+        ctx.fillStyle = (row % 2 === 0) ? '#09090b' : '#ffffff';
+        ctx.fillRect(sx, cy, 2, ch);
       }
     }
 
@@ -2013,8 +2253,11 @@ svg.tr-elev-zoomed line {
       return;
     }
 
+    const tickerMode = S.ticker_mode || 'always';
+    const showTicker = isPreview || (tickerMode === 'always') || (tickerMode === 'long' && showClimb.lengthM >= 1000);
+
     els.kpis.style.display = '';
-    els.body.style.display = '';
+    els.body.style.display = showTicker ? '' : 'none';
     if (inspected && inspected.climb !== view.activeClimb) {
       els.badge.className = 'tr-cl-badge approach';
       els.badge.textContent = `#${showClimb.index}/${showClimb.totalClimbs}`;
@@ -2025,8 +2268,11 @@ svg.tr-elev-zoomed line {
       els.k2v.textContent = `+${fmtElev(showClimb.ascentM)}`;
       els.k3l.textContent = 'avg';
       els.k3v.textContent = `${showClimb.avgGrade.toFixed(1)}%`;
-      renderTickerCanvas(els.tickerCanvas, els.scTitle, els.scEnd, showClimb, 0);
+      if (showTicker) renderTickerCanvas(els.tickerCanvas, els.scTitle, els.scEnd, showClimb, 0);
     } else if (view.mode === 'active') {
+      const remAvg = view.distLeft > 20
+        ? clamp((view.ascentLeft / view.distLeft) * 100, -25, 35)
+        : showClimb.avgGrade;
       els.badge.className = 'tr-cl-badge';
       els.badge.textContent = `CLIMB ${showClimb.index}/${showClimb.totalClimbs}`;
       els.title.textContent = `${Math.round(view.progressFrac * 100)}%`;
@@ -2035,8 +2281,8 @@ svg.tr-elev-zoomed line {
       els.k2l.textContent = 'elev';
       els.k2v.textContent = `+${fmtElev(view.ascentLeft)}`;
       els.k3l.textContent = 'avg';
-      els.k3v.textContent = `${showClimb.avgGrade.toFixed(1)}%`;
-      renderTickerCanvas(els.tickerCanvas, els.scTitle, els.scEnd, showClimb, view.distIntoClimb);
+      els.k3v.textContent = `${remAvg.toFixed(1)}%`;
+      if (showTicker) renderTickerCanvas(els.tickerCanvas, els.scTitle, els.scEnd, showClimb, view.distIntoClimb);
     } else {
       els.badge.className = 'tr-cl-badge approach';
       els.badge.textContent = `NEXT ${showClimb.index}/${showClimb.totalClimbs}`;
@@ -2047,31 +2293,34 @@ svg.tr-elev-zoomed line {
       els.k2v.textContent = fmtDist(showClimb.lengthM);
       els.k3l.textContent = 'avg';
       els.k3v.textContent = `${showClimb.avgGrade.toFixed(1)}%`;
-      renderTickerCanvas(els.tickerCanvas, els.scTitle, els.scEnd, showClimb, 0);
+      if (showTicker) renderTickerCanvas(els.tickerCanvas, els.scTitle, els.scEnd, showClimb, 0);
     }
 
     renderDrawerList(els, view.allItems || [], view.activeClimb);
   }
 
   function makeSampleView() {
-    const lengthM = 1850;
-    const segGrades = [5.5, 5.5, 5.5, 9.4, 9.4, 9.4, 9.4, 11.2, 4.1, 12.8, 6.2];
+    const lengthM = 950;
+    const segGrades = [5.5, 5.8, 6.2, 9.2, 9.6, 11.8, 12.2, 11.4, 4.1, 4.4, 8.8, 9.4, 12.6, 12.0, 6.2, 5.8, 4.5, 3.8, 3.2];
     const segments = segGrades.map((grade, idx) => ({
-      idx, offsetM: idx * 100, lenM: 100, grade, color: karooGradeColor(grade),
+      idx, offsetM: idx * 50, lenM: 50, grade, color: karooGradeColor(grade),
     }));
-    const cumAscent = new Float64Array([0, 71, 142]);
+    const postSegments = [-2.5, -4.0, -4.5, -3.8].map((grade, idx) => ({
+      idx, offsetM: lengthM + idx * 50, lenM: 50, grade, color: karooGradeColor(grade),
+    }));
+    const cumAscent = new Float64Array([0, 38, 76]);
     const climb = {
       index: 2, totalClimbs: 4, startDist: 3200, endDist: 3200 + lengthM,
-      lengthM, segM: 100, ascentM: 142, avgGrade: 7.7, segments, cumAscent,
+      lengthM, segM: 50, ascentM: 76, avgGrade: 8.0, segments, postSegments, cumAscent,
     };
     return {
       mode: 'active',
       climb,
       activeClimb: climb,
-      progressFrac: 0.38,
-      distIntoClimb: 640,
-      distLeft: lengthM * 0.62,
-      ascentLeft: ascentLeftOnClimb(climb, 0.38),
+      progressFrac: 0.45,
+      distIntoClimb: 425,
+      distLeft: lengthM - 425,
+      ascentLeft: ascentLeftOnClimb(climb, 0.45),
       curGrade: 9.4,
       draft: { text: '48', pct: 48, color: '' },
       allItems: [
