@@ -26,7 +26,7 @@
     pttKey: 'KeyV',
     chatToggleKey: 'KeyT',
     autoOpenChat: false,
-    sendBehavior: 'countdown',
+    sendBehavior: 'draft',
     handsFreeSendBehavior: 'voice',
     browserAudioProcessing: false,
     micSource: 'Auto (BT on Android)',
@@ -423,6 +423,7 @@
       postToBiketerraChat: (text, auto) => postToBiketerraChat(text, auto),
       handleTranscribedText: (rawText, fromHandsFree) => handleTranscribedText(rawText, fromHandsFree),
       getPendingDraft: () => (pendingToast ? { text: pendingToast.text, kind: pendingToast.kind } : null),
+      setPttState: (source, down) => setPttState(source, down),
       syncDock: () => syncDock(),
     };
   }
@@ -919,13 +920,25 @@
   let vadLastVoiceBytes = 0;
   let currentLevelPct = 0;
 
-  // Transcription queue + pending countdown toast
+  // Transcription queue + pending draft / countdown toast
   const txQueue = [];
   let txBusy = false;
-  let pendingToast = null; // { text, timerId, deadline }
+  let pendingToast = null; // { text, kind, timerId, deadline }
   let toastHideTimer = 0;
   let pttPressedSources = new Set(); // 'zwift' | 'key' | 'mouse'
   let wantPttOnMicReady = false;
+
+  // PTT draft gesture state (when a draft toast is active):
+  // - Single tap (< PTT_DRAFT_HOLD_MS): confirm & send after PTT_DRAFT_DBL_TAP_MS
+  // - Double tap (2nd press within PTT_DRAFT_DBL_TAP_MS): cancel draft immediately
+  // - Hold (>= PTT_DRAFT_HOLD_MS): discard draft & start recording a new message
+  const PTT_DRAFT_HOLD_MS = 280;
+  const PTT_DRAFT_DBL_TAP_MS = 380;
+  let pttDraftDownAt = 0;
+  let pttDraftHoldTimer = 0;
+  let pttDraftTapTimer = 0;
+  let pttDraftTapCount = 0;
+  let pttDraftIgnoreRelease = false;
 
   function isHandsFreeMode() {
     return activeMode === 'auto';
@@ -1130,12 +1143,13 @@
     return Math.max(minAbs, noiseFloor * snrMult);
   }
 
-  function startRecording(reason) {
+  function startRecording(reason, preElapsedMs = 0) {
     if (isRecording || cleaned) return;
     isRecording = true;
     recordReason = reason;
-    recordStartedAt = performance.now();
-    const pre = preRoll.drain(reason === 'ptt' ? 11200 : 16000); // 350ms PTT / 500ms VAD
+    recordStartedAt = performance.now() - Math.max(0, preElapsedMs);
+    const preBytes = reason === 'ptt' ? (preElapsedMs > 0 ? 16000 : 11200) : 16000; // 350ms PTT / 500ms re-record or VAD
+    const pre = preRoll.drain(preBytes);
     recordChunks = pre.length ? [pre] : [];
     recordBytes = pre.length;
     vadLastVoiceAt = performance.now();
@@ -1331,12 +1345,37 @@
     }
   }
 
+  function resetPttDraftGesture() {
+    clearTimeout(pttDraftHoldTimer);
+    clearTimeout(pttDraftTapTimer);
+    pttDraftHoldTimer = 0;
+    pttDraftTapTimer = 0;
+    pttDraftDownAt = 0;
+    pttDraftTapCount = 0;
+    pttDraftIgnoreRelease = false;
+  }
+
   function cancelPendingToast() {
+    resetPttDraftGesture();
     if (!pendingToast) return;
     if (pendingToast.kind === 'countdown') clearInterval(pendingToast.timerId);
     else clearTimeout(pendingToast.timerId);
     pendingToast = null;
     hideToast();
+    updateHud();
+  }
+
+  async function confirmPendingDraft() {
+    if (!pendingToast) return;
+    const textToSend = pendingToast.text;
+    cancelPendingToast();
+    await sendMessageNow(textToSend, true);
+  }
+
+  function discardPendingDraft(label = 'Draft canceled') {
+    if (!pendingToast) return;
+    cancelPendingToast();
+    showToast('Voice Chat', label, 'warn', 1600);
   }
 
   async function sendMessageNow(message, autoSubmit) {
@@ -1350,8 +1389,8 @@
 
   async function deliverMessage(message, fromHandsFree = false) {
     const rawBehavior = fromHandsFree ? S.handsFreeSendBehavior : S.sendBehavior;
-    const defaultBehavior = fromHandsFree ? 'voice' : 'countdown';
-    const behavior = ['voice', 'countdown', 'immediate', 'fill'].includes(rawBehavior) ? rawBehavior : defaultBehavior;
+    const defaultBehavior = fromHandsFree ? 'voice' : 'draft';
+    const behavior = ['draft', 'voice', 'countdown', 'immediate', 'fill'].includes(rawBehavior) ? rawBehavior : defaultBehavior;
 
     if (behavior === 'immediate') {
       cancelPendingToast();
@@ -1361,6 +1400,37 @@
     if (behavior === 'fill') {
       cancelPendingToast();
       await sendMessageNow(message, false);
+      return;
+    }
+
+    if (behavior === 'draft') {
+      cancelPendingToast();
+      const timerId = setTimeout(() => {
+        if (pendingToast && pendingToast.timerId === timerId) {
+          cancelPendingToast();
+          showToast('Voice Chat', 'Draft expired', 'warn', 1600);
+        }
+      }, 60000);
+      pendingToast = { text: message, kind: 'draft', timerId, deadline: performance.now() + 60000 };
+      showToast(
+        'Draft · Tap PTT confirm · 2× cancel · Hold redo',
+        message,
+        'ok',
+        0,
+        [
+          {
+            label: 'Confirm',
+            primary: true,
+            onClick: () => { confirmPendingDraft(); },
+          },
+          {
+            label: 'Cancel',
+            danger: true,
+            onClick: () => { discardPendingDraft('Draft canceled'); },
+          },
+        ]
+      );
+      updateHud();
       return;
     }
 
@@ -1382,21 +1452,16 @@
           {
             label: 'Send',
             primary: true,
-            onClick: () => {
-              cancelPendingToast();
-              sendMessageNow(message, true);
-            },
+            onClick: () => { confirmPendingDraft(); },
           },
           {
             label: 'Cancel',
             danger: true,
-            onClick: () => {
-              cancelPendingToast();
-              showToast('Voice Chat', 'Draft canceled', 'warn', 1600);
-            },
+            onClick: () => { discardPendingDraft('Draft canceled'); },
           },
         ]
       );
+      updateHud();
       return;
     }
 
@@ -1414,18 +1479,12 @@
           {
             label: 'Send now',
             primary: true,
-            onClick: () => {
-              cancelPendingToast();
-              sendMessageNow(message, true);
-            },
+            onClick: () => { confirmPendingDraft(); },
           },
           {
             label: 'Cancel',
             danger: true,
-            onClick: () => {
-              cancelPendingToast();
-              showToast('Voice Chat', 'Canceled', 'warn', 1500);
-            },
+            onClick: () => { discardPendingDraft('Canceled'); },
           },
         ]
       );
@@ -1434,8 +1493,7 @@
     const timerId = setInterval(() => {
       if (cleaned) { cancelPendingToast(); return; }
       if (performance.now() >= deadline) {
-        cancelPendingToast();
-        sendMessageNow(message, true);
+        confirmPendingDraft();
       } else {
         renderCountdown();
       }
@@ -1443,24 +1501,69 @@
 
     pendingToast = { text: message, kind: 'countdown', timerId, deadline };
     renderCountdown();
+    updateHud();
   }
 
   /* ── 6. PTT & Mode Controls ───────────────────────────────────────────────── */
+  async function startPttRecordingNow(preElapsedMs = 0) {
+    wantPttOnMicReady = true;
+    const ready = await ensureMicStarted();
+    if (!ready || !wantPttOnMicReady || pttPressedSources.size === 0 || cleaned) return;
+    if (!isRecording) startRecording('ptt', preElapsedMs);
+  }
+
   async function setPttState(source, down) {
     if (cleaned) return;
     if (down) {
       if (pttPressedSources.has(source)) return;
       pttPressedSources.add(source);
       if (pttPressedSources.size === 1) {
-        wantPttOnMicReady = true;
-        const ready = await ensureMicStarted();
-        if (!ready || !wantPttOnMicReady || pttPressedSources.size === 0 || cleaned) return;
-        if (!isRecording) startRecording('ptt');
+        if (pendingToast && !isRecording) {
+          if (pttDraftTapCount >= 1) {
+            discardPendingDraft('Draft canceled');
+            pttDraftIgnoreRelease = true;
+            return;
+          }
+          clearTimeout(pttDraftHoldTimer);
+          pttDraftDownAt = performance.now();
+          pttDraftIgnoreRelease = false;
+          pttDraftHoldTimer = setTimeout(() => {
+            pttDraftHoldTimer = 0;
+            if (cleaned || pttPressedSources.size === 0 || !pttDraftDownAt) return;
+            const heldMs = Math.max(PTT_DRAFT_HOLD_MS, performance.now() - pttDraftDownAt);
+            cancelPendingToast();
+            startPttRecordingNow(heldMs);
+          }, PTT_DRAFT_HOLD_MS);
+          return;
+        }
+        await startPttRecordingNow(0);
       }
     } else {
       pttPressedSources.delete(source);
       if (pttPressedSources.size === 0) {
         wantPttOnMicReady = false;
+        if (pttDraftIgnoreRelease) {
+          pttDraftIgnoreRelease = false;
+          return;
+        }
+        if (pttDraftDownAt > 0) {
+          clearTimeout(pttDraftHoldTimer);
+          pttDraftHoldTimer = 0;
+          pttDraftDownAt = 0;
+          if (pendingToast) {
+            pttDraftTapCount = 1;
+            toastHead.textContent = 'Sending… (tap again to cancel)';
+            clearTimeout(pttDraftTapTimer);
+            pttDraftTapTimer = setTimeout(() => {
+              pttDraftTapTimer = 0;
+              pttDraftTapCount = 0;
+              if (!cleaned && pendingToast) {
+                confirmPendingDraft();
+              }
+            }, PTT_DRAFT_DBL_TAP_MS);
+          }
+          return;
+        }
         if (isRecording && recordReason === 'ptt') {
           finishRecording(140);
         }
@@ -1885,8 +1988,10 @@
       }
     } else {
       dotEl.className = isMicLive() ? 'tvc-dot ready' : 'tvc-dot';
-      micLabelEl.textContent = 'PTT';
-      micBtn.title = `Hold to talk (or Zwift Ride RB / ${S.pttKey || 'hotkey'}), quick tap toggles recording`;
+      micLabelEl.textContent = pendingToast ? 'Draft' : 'PTT';
+      micBtn.title = pendingToast
+        ? 'Tap PTT to confirm · Double-tap to cancel · Hold to re-record'
+        : `Hold to talk (or Zwift Ride RB / ${S.pttKey || 'hotkey'}), quick tap toggles recording`;
     }
 
     updateHudVuOnly();
@@ -1943,6 +2048,7 @@
   let mouseDownAt = 0;
   let mouseHoldTimer = 0;
   let mouseIsHolding = false;
+  let mouseRoutedToPtt = false;
 
   micBtn.addEventListener('pointerdown', async (e) => {
     if (e.button !== 0) return;
@@ -1958,6 +2064,13 @@
       return;
     }
 
+    if (pendingToast && !isRecording) {
+      mouseRoutedToPtt = true;
+      micBtn.setPointerCapture(e.pointerId);
+      setPttState('mouse', true);
+      return;
+    }
+
     mouseDownAt = performance.now();
     mouseIsHolding = false;
     micBtn.setPointerCapture(e.pointerId);
@@ -1970,6 +2083,11 @@
   const endMouseMic = async () => {
     clearTimeout(mouseHoldTimer);
     if (isHandsFreeMode()) return;
+    if (mouseRoutedToPtt) {
+      mouseRoutedToPtt = false;
+      await setPttState('mouse', false);
+      return;
+    }
     if (mouseDownAt === 0) return;
     const dt = performance.now() - mouseDownAt;
     mouseDownAt = 0;
@@ -2046,6 +2164,12 @@
     if (pttPressedSources.size > 0) {
       pttPressedSources.clear();
       wantPttOnMicReady = false;
+      if (pttDraftHoldTimer) {
+        clearTimeout(pttDraftHoldTimer);
+        pttDraftHoldTimer = 0;
+        pttDraftDownAt = 0;
+      }
+      pttDraftIgnoreRelease = false;
       if (isRecording && recordReason === 'ptt') finishRecording(140);
     }
   };

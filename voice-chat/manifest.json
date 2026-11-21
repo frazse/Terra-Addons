@@ -1,7 +1,7 @@
 {
   "id": "voice-chat",
   "name": "Voice Chat (External Whisper Server)",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "category": "Chat",
   "description": "Requires an external faster-whisper Wyoming TCP server running outside Terra (e.g. linuxserver/faster-whisper on port 10300). Docks directly into Biketerra's in-game chat zone with Zwift Ride Push-to-Talk or hands-free Auto mode.",
   "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate*"],
@@ -70,9 +70,9 @@
       "key": "sendBehavior",
       "label": "After PTT transcription",
       "type": "select",
-      "default": "countdown",
-      "options": ["countdown", "voice", "immediate", "fill"],
-      "description": "countdown = 2s cancelable preview · voice = show draft & wait for 'send'/'cancel' · immediate = post right away · fill = type only"
+      "default": "draft",
+      "options": ["draft", "countdown", "voice", "immediate", "fill"],
+      "description": "draft = show draft with Confirm/Cancel (tap PTT to confirm, double-tap to cancel, hold to re-record) · countdown = 2s cancelable preview · voice = wait for 'send'/'cancel' · immediate = post right away · fill = type only"
     },
     {
       "key": "handsFreeSendBehavior",
