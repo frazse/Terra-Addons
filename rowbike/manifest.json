@@ -1,0 +1,64 @@
+{
+  "id": "rowbike",
+  "name": "Rowbike Avatar (Experiment)",
+  "version": "0.1.0",
+  "category": "Camera",
+  "description": "Experimental 3D Rowbike 720 Sport + animated rowing avatar replacement for your rider in Biketerra.",
+  "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate*"],
+  "js": ["main.js"],
+  "css": ["style.css"],
+  "enabled": true,
+  "settings": [
+    {
+      "key": "activationMode",
+      "label": "Activation mode",
+      "type": "select",
+      "options": ["always", "auto", "off"],
+      "default": "always",
+      "description": "always = replace your ego avatar immediately; auto = individually replace each rider (you and/or other riders) who has sport: 1 in the biketerra-ride broadcast channel; off = disabled."
+    },
+    {
+      "key": "avatarMode",
+      "label": "Rower avatar",
+      "type": "select",
+      "options": ["real", "stylized"],
+      "default": "real",
+      "description": "real = animate your actual Biketerra player avatar (jersey, helmet, face, shadows) on the Rowbike; stylized = procedural fallback rower."
+    },
+    {
+      "key": "animateWhenStopped",
+      "label": "Animate stroke when stopped (test)",
+      "type": "checkbox",
+      "default": true,
+      "description": "Keep rowing at Demo SPM while stationary so you can preview the animation at 0 km/h."
+    },
+    {
+      "key": "demoSpm",
+      "label": "Demo / fallback stroke rate (SPM)",
+      "type": "number",
+      "default": 24,
+      "description": "Strokes per minute used when no live BLE rower stroke rate is present."
+    },
+    {
+      "key": "frameColor",
+      "label": "Rowbike rail & frame color",
+      "type": "color",
+      "default": "#c8242b",
+      "description": "Primary frame / sliding seat rail color (720 Sport red by default)."
+    },
+    {
+      "key": "leverColor",
+      "label": "Rowing lever color",
+      "type": "color",
+      "default": "#243ea8",
+      "description": "Pivoting rowing power arm color (720 Sport blue by default)."
+    },
+    {
+      "key": "showStatusPill",
+      "label": "Show test status / toggle pill",
+      "type": "checkbox",
+      "default": true,
+      "description": "Show a small bottom-left pill to toggle Rowbike on/off and view WebGPU diagnostic status."
+    }
+  ]
+}
