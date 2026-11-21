@@ -1,11 +1,10 @@
-/* Rowbike Avatar (Experiment) v0.1.0
- * Replaces your Biketerra ego bike + avatar with an articulated 3D Rowbike 720 Sport
- * and biomechanically animated rower (wearing your live ego.design kit colors).
+/* Rowbike Avatar (Experiment) v0.2.0
+ * Replaces rowing riders' Biketerra bike + avatar with an articulated 3D Rowbike 720 Sport
+ * and biomechanically animated rower (wearing each rider's live design kit and bike colors).
  *
- * - Strips ego's default `skinned` + `spoke` draws in `engine.render` (other riders untouched).
+ * - Strips rowing riders' default `bike` + `spoke` draws in `engine.render` (other riders untouched).
  * - Injects a depth-tested WebGPU draw directly into Biketerra's main color+depth render pass.
- * - Supports `activationMode: 'always'` (default for testing) or `'auto'` (rowing-only via
- *   `window.__terraMode === 'row'` or BLE FTMS Rower Data 0x2AD1 / Concept2 PM5).
+ * - Supports `activationMode: 'auto'` (default: per-rider `sport: 1` from `biketerra-ride`) or `'always'`.
  */
 'use strict';
 
@@ -19,15 +18,13 @@
   }
 
   const DEFAULTS = {
-    activationMode: 'always', // 'always' | 'auto' | 'off'
-    avatarMode: 'real',       // 'real' | 'stylized'
-    animateWhenStopped: true,
-    demoSpm: 24,
+    activationMode: 'auto',    // 'auto' | 'always' | 'off'
+    avatarMode: 'real',        // 'real' | 'stylized'
+    colorSource: 'rider_bike', // 'rider_bike' | 'custom'
     frameColor: '#c8242b',
     leverColor: '#243ea8',
-    showStatusPill: true,
-    bikeShadow: true,         // project a ground shadow of the Rowbike (the injected draw has no native shadow)
-    shadowAzimuth: 0,         // degrees to rotate the shadow direction around the vertical axis
+    bikeShadow: true,          // project a ground shadow of the Rowbike (the injected draw has no native shadow)
+    shadowAzimuth: 0,          // degrees to rotate the shadow direction around the vertical axis
   };
 
   let S = { ...DEFAULTS };
@@ -40,7 +37,6 @@
   let unsubBleDisconnect = null;
   let unsubRide = null;
   let rideChannel = null;
-  let manualOverride = null; // null = follow S.activationMode, true/false = pill click override
 
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(+v) ? +v : lo));
   const lerp = (a, b, t) => a + (b - a) * t;
@@ -50,6 +46,14 @@
   };
 
   function hexToRgb(hex, fallback) {
+    if (Array.isArray(hex) && hex.length >= 3) {
+      const s = (hex[0] > 1 || hex[1] > 1 || hex[2] > 1) ? (1 / 255) : 1;
+      return [clamp(hex[0] * s, 0, 1), clamp(hex[1] * s, 0, 1), clamp(hex[2] * s, 0, 1)];
+    }
+    if (typeof hex === 'number' && Number.isFinite(hex) && hex >= 0) {
+      const n = Math.floor(hex);
+      return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+    }
     const raw = String(hex || fallback || '#888888').trim().replace(/^#/, '');
     if (raw.length === 3) {
       const r = parseInt(raw[0] + raw[0], 16);
@@ -64,6 +68,37 @@
       if (Number.isFinite(r) && Number.isFinite(g) && Number.isFinite(b)) return [r / 255, g / 255, b / 255];
     }
     return [0.55, 0.55, 0.58];
+  }
+
+  function oppositeRgb(c) {
+    // True RGB inverse (1 - r, 1 - g, 1 - b); if the frame color is very close to 50% mid-grey
+    // where 1 - c === c, push lightness/saturation slightly so the lever always contrasts with the rail
+    let r = clamp(1 - c[0], 0, 1);
+    let g = clamp(1 - c[1], 0, 1);
+    let b = clamp(1 - c[2], 0, 1);
+    if (Math.hypot(r - c[0], g - c[1], b - c[2]) < 0.22) {
+      const luma = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
+      const shift = luma >= 0.5 ? -0.32 : 0.32;
+      r = clamp(r + shift, 0.08, 0.92);
+      g = clamp(g + shift, 0.08, 0.92);
+      b = clamp(b + shift, 0.08, 0.92);
+    }
+    return [r, g, b];
+  }
+
+  function resolveRiderDesign(rider) {
+    if (rider && rider.design && typeof rider.design === 'object') return rider.design;
+    const rc = window.btApp && (window.btApp.riderController || window.btApp.rideController);
+    if (rc) {
+      if (rider === rc.ego && rc.focalRider && rc.focalRider.design) return rc.focalRider.design;
+      const sim = (rider && rider.sim) || {};
+      const id = sim.id ?? sim.athleteId ?? (rider && rider.id) ?? null;
+      if (id != null && rc.humanFeed && rc.humanFeed.humans) {
+        const h = rc.humanFeed.humans[id] || rc.humanFeed.humans[String(id)];
+        if (h && h.design && typeof h.design === 'object') return h.design;
+      }
+    }
+    return (rider && rider.design) || {};
   }
 
   function shadeRgb(c, f) {
@@ -212,11 +247,7 @@
 
   function getRowbikeRiders(rc) {
     if (!rc) return [];
-    if (manualOverride === false) return [];
     const ego = rc.ego || rc.focalRider || null;
-    if (manualOverride === true) {
-      return ego && ego.sim ? [ego] : [];
-    }
     if (S.activationMode === 'off') return [];
     if (S.activationMode === 'always') {
       return ego && ego.sim ? [ego] : [];
@@ -240,16 +271,6 @@
       }
     }
     return out;
-  }
-
-  function isRowbikeActive() {
-    if (manualOverride !== null) return manualOverride;
-    if (S.activationMode === 'off') return false;
-    if (S.activationMode === 'always') return true;
-    const bt = window.btApp;
-    const rc = bt && (bt.riderController || bt.rideController);
-    if (rc) return getRowbikeRiders(rc).length > 0;
-    return bleRow.egoSportRow || bleRow.rowingIds.size > 0 || bleRow.rowingNames.size > 0;
   }
 
   /* ── 2. Dynamic Mesh Builder (Pre-allocated Zero-GC Typed Arrays) ─────────── */
@@ -695,10 +716,11 @@
       st = {
         phase: 0.15,
         wheelSpin: 0,
-        activeBlend: 1,
+        activeBlend: 0,
+        idleBlend: 1,
         lastHeading: null,
         smoothSteer: 0,
-        smoothLean: 0,
+        smoothLean: -0.13,
         spm: 0,
         bonesBuf: null,
         nativeLean: 0,
@@ -741,6 +763,12 @@
     const speed = (sim && Number.isFinite(sim.speed)) ? Math.max(0, sim.speed) : 0;
     const power = (sim && Number.isFinite(sim.power)) ? Math.max(0, sim.power) : 0;
     let cad = (sim && Number.isFinite(sim.cadence)) ? Math.max(0, sim.cadence) : 0;
+    // Before an activity starts (or when standing still with 0 W and 0 m/s), Biketerra initializes
+    // `sim.cadence = 80` as a placeholder (`80 * 0.32 = 25.6 -> 26 SPM`). Ignore `sim.cadence` when
+    // stationary with no power so the rider stays in the idle pose until actually moving or rowing.
+    if (speed < 0.05 && power < 1) {
+      cad = 0;
+    }
     if (cad <= 0 && sim) {
       const sid = sim.id ?? sim.athleteId ?? rider.id ?? null;
       if (sid != null && bleRow.spmById.has(String(sid))) {
@@ -764,14 +792,15 @@
     } else if (power > 10) {
       spm = clamp(18 + power / 18, 18, 36);
     } else if (speed > 0.6) {
-      spm = clamp(Number(S.demoSpm) || 22, 14, 40);
-    } else if (S.animateWhenStopped) {
-      spm = clamp(Number(S.demoSpm) || 24, 10, 42);
+      spm = 22;
     }
 
     st.spm = spm;
     const targetBlend = spm > 1 ? 1 : 0;
     st.activeBlend += (targetBlend - st.activeBlend) * Math.min(1, dt * 4.0);
+    const isStopped = speed < 0.25 && spm <= 1;
+    const targetIdle = isStopped ? 1 : 0;
+    st.idleBlend = (st.idleBlend || 0) + (targetIdle - (st.idleBlend || 0)) * Math.min(1, dt * 5.0);
     if (spm > 1) {
       st.phase = (st.phase + dt * (spm / 60)) % 1;
     }
@@ -1001,11 +1030,14 @@
 
   function poseRealBiketerraAvatar(ego, k, seatY, seatZ, barY, barZ, steerPt) {
     const sc = (ego && Number.isFinite(ego.renderScale) && ego.renderScale > 0.2) ? ego.renderScale : 1;
+    const idle = k.idle || 0;
+    const lean = k.lean || 0;
 
     // Note on Rowbike +X rotation sign:
     //   negative angle = lean FORWARD (Catch, toward -Z)
     //   positive angle = lay BACK (Finish, toward +Z)
-    const torsoPitch = lerp(-0.46, 0.26, k.back); // leans well forward at the catch (arms straight) -> +15° layback at finish
+    // When idle (standing still), sit slightly more upright and shift hips slightly left toward the planted left foot
+    const torsoPitch = lerp(lerp(-0.46, 0.26, k.back), -0.10, idle);
 
     // Smoothly articulated pelvis -> spine -> neck -> level head (eyes always looking down the road!)
     const R0 = m3RotX(torsoPitch * 0.30); // root / pelvis
@@ -1018,17 +1050,35 @@
     // Place mid-hip joint directly over the sliding black seat pad
     // (slid back ~5 cm so the handlebar no longer clips into the chest)
     // Hips sink onto the saddle at the catch (front) and sit at full height at the finish (back)
-    const hipTarget = [0, seatY + lerp(0.082, 0.115, k.leg), seatZ + 0.04];
-    // Ankle targets: with the foot pitched ~45° the MID-foot (not the heel) rests on the plate top (~0.437)
-    const footTargets = [-1, 1].map((side) => steerPt(side * ANKLE_LOCAL[0], ANKLE_LOCAL[1], ANKLE_LOCAL[2]));
-    // Keep both legs a little short of full extension. (a) a fully stretched leg makes the IK clamp and
-    // drags the feet off the pegs, (b) near lock-out the knee swings very fast for tiny hip movement,
-    // which showed up as the legs "snapping"/vibrating. The hip pull-back is solved in closed form and
-    // blended smoothly (no stepping, no kink) so there is no frame-to-frame jitter.
+    // When idle with left foot on the ground, shift pelvis slightly left (-X) and lower onto the left side of the seat
+    const hipTarget = [
+      lerp(0, -0.045, idle),
+      seatY + lerp(lerp(0.082, 0.115, k.leg), 0.055, idle),
+      seatZ + 0.04,
+    ];
+    // Ankle targets: with the foot pitched ~45° the MID-foot (not the heel) rests on the plate top (~0.437).
+    // When idle (`idle > 0`), the left foot (side = -1) steps down off the front peg onto the asphalt
+    // level with the bottom of the wheels (world Y = 0 -> ankle height = FOOT_ANKLE_H * sc above the road).
+    const pegTargets = [-1, 1].map((side) => steerPt(side * ANKLE_LOCAL[0], ANKLE_LOCAL[1], ANKLE_LOCAL[2]));
+    const leftGroundX = -0.25 * sc;
+    const leftGroundZ = seatZ - 0.04;
+    // Compensate for bike lean so the planted left shoe sole sits flush on the ground plane (world Y = 0)
+    const cl = Math.cos(lean), sl = Math.sin(lean);
+    const groundWorldY = FOOT_ANKLE_H * sc;
+    const leftGroundLocalY = (groundWorldY - leftGroundX * sl) / Math.max(0.5, cl);
+    const leftFootTarget = [
+      lerp(pegTargets[0][0], leftGroundX, idle),
+      lerp(pegTargets[0][1], leftGroundLocalY, idle),
+      lerp(pegTargets[0][2], leftGroundZ, idle),
+    ];
+    const footTargets = [leftFootTarget, pegTargets[1]];
+
+    // Keep right leg (and left leg while rowing) a little short of full extension so the IK never snaps.
     const legReach = (LEG_THIGH_L + LEG_SHIN_L) * sc * 0.975;
     const hipLocal = [16, 19].map((i) => m3MulVec(R0, vSub(BONE_BIND_RB[i], MID_HIP_BIND_RB)));
     let needShift = -1;
     for (let i = 0; i < 2; i++) {
+      if (i === 0 && idle > 0.25) continue; // planted left foot is right below the hip, only constrain to right peg
       const hx = hipTarget[0] + hipLocal[i][0] * sc;
       const hy = hipTarget[1] + hipLocal[i][1] * sc;
       const hz = hipTarget[2] + hipLocal[i][2] * sc;
@@ -1060,20 +1110,25 @@
     writeSkinBone(4, R4, P4, sc);
     writeSkinBone(5, R5, P5, sc);
 
-    // ── Legs (16..18 left, 19..21 right): 2-bone IK welded to Rowbike front fork footpegs ──
-    const footPitch = FOOT_PITCH; // constant ~45° so the sole stays flush on the angled footplate
+    // ── Legs (16..18 left, 19..21 right): 2-bone IK welded to Rowbike front fork footpegs (or ground when idle) ──
     const legs = [
       { side: -1, hipI: 16, kneeI: 17, footI: 18, lThigh: LEG_THIGH_L * sc, lShin: LEG_SHIN_L * sc },
       { side:  1, hipI: 19, kneeI: 20, footI: 21, lThigh: LEG_THIGH_R * sc, lShin: LEG_SHIN_R * sc },
     ];
     for (const lg of legs) {
+      const isLeft = lg.side < 0;
+      const legIdle = isLeft ? idle : 0;
       const pHip = stepJoint(P0, R0, 0, lg.hipI);
-      const pFoot = footTargets[lg.side < 0 ? 0 : 1];
+      const pFoot = footTargets[isLeft ? 0 : 1];
+      // When the left leg is planted vertically on the ground, point the knee pole forward (-Z) and slightly out
+      const poleX = lg.side * lerp(0.38, 0.22, legIdle);
+      const poleY = lerp(1.0, 0.15, legIdle);
+      const poleZ = lerp(-0.18, -1.0, legIdle);
       const pKnee = solveTwoBoneIK(
         pHip[0], pHip[1], pHip[2],
         pFoot[0], pFoot[1], pFoot[2],
         lg.lThigh, lg.lShin,
-        lg.side * 0.38, 1.0, -0.18 // knees splay OUT around the lever blades (as in the reference photos)
+        poleX, poleY, poleZ
       );
       const rThigh = alignFrame(
         vSub(BONE_BIND_RB[lg.kneeI], BONE_BIND_RB[lg.hipI]), [1, 0, 0],
@@ -1085,7 +1140,12 @@
       );
       // Use actual end of shin so ankle mesh never detaches even at extreme scale
       const pFootActual = stepJoint(pKnee, rShin, lg.kneeI, lg.footI);
-      const rFoot = m3RotX(footPitch);
+      // On the peg the sole is angled at FOOT_PITCH (~45°); on the ground it is flat (0°) and counter-rolled by -lean so sole is level with road
+      const footPitch = lerp(FOOT_PITCH, 0.0, legIdle);
+      let rFoot = m3RotX(footPitch);
+      if (legIdle > 0.01 && Math.abs(lean) > 0.001) {
+        rFoot = m3Mul(m3RotAxis([0, 0, 1], -lean * legIdle), rFoot);
+      }
 
       writeSkinBone(lg.hipI,  rThigh, pHip,        sc);
       writeSkinBone(lg.kneeI, rShin,  pKnee,       sc);
@@ -1114,13 +1174,15 @@
       // Overhand grip: palm rests on top of the bar, knuckle joint sits just past the bar,
       // and the fingers curl down + back underneath it. Wrist is derived from the knuckle target
       // so the bar always passes through the palm/finger base regardless of avatar scale.
-      const GRIP_PITCH = lerp(0.58, 0.42, pull);   // how steeply the hand points down over the bar
+      // At the finish (pull = 1), keep the wrist flat/neutral along the forearm (minimal downward pitch)
+      // and raise `pKnuckle` slightly so the palm still sits ON TOP of the grip bar instead of cutting through it!
+      const GRIP_PITCH = lerp(0.45, 0.08, pull);   // how steeply the hand points down over the bar
       const GRIP_ROLL_DEG = -121; // wrist roll about the forearm axis (was -31°; +90° more pronation). Flip sign if it rolls the wrong way
       const handLen  = vLen(vSub(BONE_BIND_RB[ar.haI], BONE_BIND_RB[ar.fiI])) * sc;
       const gripDir  = vNorm([0, -GRIP_PITCH, -(1 - GRIP_PITCH * 0.25)]);
       const rollRad  = GRIP_ROLL_DEG * Math.PI / 180;
       const gripUp   = [ar.side * Math.sin(rollRad), Math.cos(rollRad), 0];
-      const pKnuckle = [ar.side * 0.225, barY - 0.008, barZ - 0.032];
+      const pKnuckle = [ar.side * 0.225, barY + lerp(-0.004, 0.022, pull), barZ - lerp(0.032, 0.024, pull)];
       const pWrist = [
         pKnuckle[0] - gripDir[0] * handLen,
         pKnuckle[1] - gripDir[1] * handLen,
@@ -1283,10 +1345,14 @@
     st.smoothSteer += (rawSteer - st.smoothSteer) * alphaSteer;
     const steer = st.smoothSteer;
 
+    const idle = st.idleBlend || 0;
     let targetLean = 0;
-    if (Number.isFinite(sim.leanAngle) && Math.abs(sim.leanAngle) > 1e-4) {
+    if (idle > 0.05) {
+      // When stopped, lean ~7.5° (-0.13 rad) to the left onto the planted left foot
+      targetLean = lerp(0, -0.13, idle);
+    } else if (Number.isFinite(sim.leanAngle) && Math.abs(sim.leanAngle) > 1e-4) {
       targetLean = sim.leanAngle;
-    } else if (Number.isFinite(st.nativeLean) && Math.abs(st.nativeLean) > 1e-4) {
+    } else if (Number.isFinite(st.nativeLean) && Math.abs(st.nativeLean) > 1e-4 && spd > 0.4) {
       targetLean = st.nativeLean;
     } else {
       const wb = (sim.bikeMetrics && sim.bikeMetrics.wheelBase) || 0.99;
@@ -1312,15 +1378,24 @@
     basis.ux = ux; basis.uy = uy; basis.uz = uz;
     basis.bx = -fx; basis.by = -fy; basis.bz = -fz;
 
-    // Palette: Rowbike 720 Sport + live rider.design kit colors
-    const d = (rider && rider.design) || {};
-    const cRed     = hexToRgb(S.frameColor, '#c8242b');
+    // Palette: Rowbike 720 Sport + live rider.design kit & bike colors
+    const d = resolveRiderDesign(rider);
+    const useRiderBikeColors = S.colorSource !== 'custom';
+    const hasBikeFrame = d && d.bike_frame_color != null && d.bike_frame_color !== '';
+    const hasSidewall  = d && d.bike_sidewall_color != null && d.bike_sidewall_color !== '';
+    const cRed     = (useRiderBikeColors && hasBikeFrame)
+      ? hexToRgb(d.bike_frame_color, S.frameColor || '#c8242b')
+      : hexToRgb(S.frameColor, '#c8242b');
     const cRedDark = shadeRgb(cRed, 0.72);
-    const cBlue    = hexToRgb(S.leverColor, '#243ea8');
+    const cBlue    = (useRiderBikeColors && hasBikeFrame)
+      ? oppositeRgb(cRed)
+      : hexToRgb(S.leverColor, '#243ea8');
     const cBlueHi  = shadeRgb(cBlue, 1.25);
     const cBlack   = [0.11, 0.12, 0.14];
     const cCharc   = [0.19, 0.21, 0.24];
-    const cTire    = [0.10, 0.105, 0.115];
+    const cTire    = (useRiderBikeColors && hasSidewall)
+      ? hexToRgb(d.bike_sidewall_color, '#1a1b1d')
+      : [0.10, 0.105, 0.115];
     const cRim     = [0.78, 0.81, 0.85];
     const cCable   = [0.22, 0.24, 0.27];
     const cShadow  = [0.05, 0.05, 0.06];
@@ -1335,6 +1410,8 @@
     const cVisor   = [0.08, 0.11, 0.16];
 
     const k = computeStrokeKinematics(st.phase, st.activeBlend);
+    k.idle = idle;
+    k.lean = lean;
 
     const startVerts = vertCount;
     const startIdx = idxCount;
@@ -1489,13 +1566,14 @@
       return vertCount > startVerts && idxCount > startIdx;
     }
 
-    const hipY = seatY + 0.08;
+    const hipX = lerp(0, -0.04, idle);
+    const hipY = seatY + lerp(0.08, 0.055, idle);
     const hipZ = seatZ + 0.01;
     // Pelvis / cycling bibs
-    addEllipsoid(0, hipY + 0.02, hipZ, 0.155, 0.095, 0.115, 6, 10, cShorts, 0.08, 0);
+    addEllipsoid(hipX, hipY + 0.02, hipZ, 0.155, 0.095, 0.115, 6, 10, cShorts, 0.08, 0);
 
     // Torso hinge: +21° forward at catch -> -15° layback at finish
-    const torsoAngle = lerp(0.36, -0.26, k.back);
+    const torsoAngle = lerp(lerp(0.36, -0.26, k.back), 0.10, idle);
     const sinT = Math.sin(torsoAngle), cosT = Math.cos(torsoAngle);
     const torsoLen = 0.48;
 
@@ -1505,8 +1583,8 @@
     const shZ = hipZ - torsoLen * sinT;
 
     // Lower & upper torso (jersey) + shoulder bar
-    addLimb(0, hipY + 0.03, hipZ, 0, midTorsoY, midTorsoZ, 0.135, 0.148, 10, cJersey, 0.10);
-    addLimb(0, midTorsoY, midTorsoZ, 0, shY, shZ, 0.148, 0.160, 10, cJersey, 0.10);
+    addLimb(hipX, hipY + 0.03, hipZ, hipX * 0.5, midTorsoY, midTorsoZ, 0.135, 0.148, 10, cJersey, 0.10);
+    addLimb(hipX * 0.5, midTorsoY, midTorsoZ, 0, shY, shZ, 0.148, 0.160, 10, cJersey, 0.10);
     addEllipsoid(0, shY - 0.02, shZ, 0.195, 0.085, 0.105, 6, 10, cJersey, 0.10, -torsoAngle);
 
     // Neck, Head, Aero Helmet + Visor Sunglasses (head stays level looking down the road!)
@@ -1524,17 +1602,27 @@
     // Cycling sunglasses / visor across front of face (-Z)
     addBoxBeam(-0.075, headY + 0.012, headZ - 0.088, 0.075, headY + 0.012, headZ - 0.088, 0.016, 0.020, cVisor, 0.85);
 
-    // 2-Bone IK Legs (Hips on sliding seat -> Knees up/out -> Feet welded to front fork footpegs!)
+    // 2-Bone IK Legs (Hips on sliding seat -> Knees up/out -> Feet welded to front fork footpegs or ground when idle!)
     const thighLen = 0.45;
     const shinLen  = 0.44;
     for (const side of [-1, 1]) {
-      const hx = side * 0.102;
-      const foot = steerPt(side * 0.145, 0.46, -0.48);
+      const isLeft = side < 0;
+      const legIdle = isLeft ? idle : 0;
+      const hx = hipX + side * 0.102;
+      const pegFoot = steerPt(side * 0.145, 0.46, -0.48);
+      const gndX = -0.25;
+      const gndY = (0.045 - gndX * Math.sin(lean)) / Math.max(0.5, Math.cos(lean));
+      const gndZ = seatZ - 0.04;
+      const foot = [
+        lerp(pegFoot[0], gndX, legIdle),
+        lerp(pegFoot[1], gndY, legIdle),
+        lerp(pegFoot[2], gndZ, legIdle),
+      ];
       const knee = solveTwoBoneIK(
         hx, hipY, hipZ,
         foot[0], foot[1], foot[2],
         thighLen, shinLen,
-        side * 0.14, 1.0, -0.22 // knee bends cleanly UP and slightly OUTWARD
+        side * lerp(0.14, 0.20, legIdle), lerp(1.0, 0.15, legIdle), lerp(-0.22, -1.0, legIdle)
       );
 
       // Upper thigh (bib shorts) -> lower thigh (skin) -> knee joint -> calf (skin) -> sock -> shoe
@@ -1551,8 +1639,14 @@
       addLimb(knee[0], knee[1], knee[2], sockX, sockY, sockZ, 0.052, 0.039, 8, cSkin, 0.12);
       addLimb(sockX, sockY, sockZ, foot[0], foot[1], foot[2], 0.040, 0.036, 8, cSocks, 0.08);
 
-      // Cycling shoe planted against the footplate
-      const toe = steerPt(side * 0.148, 0.51, -0.53);
+      // Cycling shoe planted against the footplate (or flat on the ground when idle)
+      const pegToe = steerPt(side * 0.148, 0.51, -0.53);
+      const gndToe = [gndX, gndY - 0.015, gndZ - 0.13];
+      const toe = [
+        lerp(pegToe[0], gndToe[0], legIdle),
+        lerp(pegToe[1], gndToe[1], legIdle),
+        lerp(pegToe[2], gndToe[2], legIdle),
+      ];
       addBoxBeam(foot[0], foot[1] - 0.02, foot[2] + 0.03, toe[0], toe[1], toe[2], 0.044, 0.034, cShoes, 0.3);
     }
 
@@ -2339,46 +2433,17 @@
     log('hooked engine.render for Rowbike avatar replacement');
   }
 
-  /* ── 8. Lightweight Test Toggle / Status Pill ─────────────────────────────── */
-  const pill = document.createElement('button');
-  pill.type = 'button';
-  pill.className = 'rb-pill';
-  pill.title = 'Click to toggle Rowbike Avatar on/off';
-  const pillDot = document.createElement('span');
-  pillDot.className = 'rb-dot';
-  const pillLbl = document.createElement('span');
-  pillLbl.textContent = 'Rowbike';
-  const pillMeta = document.createElement('span');
-  pillMeta.className = 'rb-meta';
-  pill.append(pillDot, pillLbl, pillMeta);
-  pill.addEventListener('click', () => {
-    manualOverride = !isRowbikeActive();
-    syncPill();
-  });
-  document.body.append(pill);
-
-  function syncPill() {
-    pill.classList.toggle('rb-hidden', !S.showStatusPill);
-    const on = isRowbikeActive();
-    pill.classList.toggle('active', on);
-    pillMeta.textContent = on ? renderer.diag : 'off';
-  }
-  syncPill();
-
   try {
     terra.settings.onChange(async () => {
       try {
         S = { ...DEFAULTS, ...(await terra.settings.all()) };
-        manualOverride = null;
-        syncPill();
       } catch {}
     });
   } catch {}
 
-  /* ── 9. Wait for btApp + Register Render Feature ──────────────────────────── */
+  /* ── 8. Wait for btApp + Register Render Feature ──────────────────────────── */
   const pollTimer = setInterval(() => {
     if (cleaned) return;
-    syncPill();
     const bt = window.btApp;
     if (!bt || typeof bt.addFeature !== 'function') return;
     if (!unhookFeature) {
@@ -2421,7 +2486,6 @@
     try { renderer.vbuf?.destroy?.(); } catch {}
     try { renderer.ibuf?.destroy?.(); } catch {}
     try { renderer.ubuf?.destroy?.(); } catch {}
-    try { pill.remove(); } catch {}
     if (window.__terraRowbikeCleanup === cleanup) delete window.__terraRowbikeCleanup;
     log('cleaned up');
   }

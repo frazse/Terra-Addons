@@ -1,7 +1,7 @@
 {
   "id": "rowbike",
   "name": "Rowbike Avatar (Experiment)",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "category": "Camera",
   "description": "Experimental 3D Rowbike 720 Sport + animated rowing avatar replacement for your rider in Biketerra.",
   "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate*"],
@@ -14,8 +14,8 @@
       "label": "Activation mode",
       "type": "select",
       "options": ["always", "auto", "off"],
-      "default": "always",
-      "description": "always = replace your ego avatar immediately; auto = individually replace each rider (you and/or other riders) who has sport: 1 in the biketerra-ride broadcast channel; off = disabled."
+      "default": "auto",
+      "description": "auto = individually replace each rider (you and/or other riders) who has sport: 1 in the biketerra-ride broadcast channel; always = replace your ego avatar immediately; off = disabled."
     },
     {
       "key": "avatarMode",
@@ -26,39 +26,26 @@
       "description": "real = animate your actual Biketerra player avatar (jersey, helmet, face, shadows) on the Rowbike; stylized = procedural fallback rower."
     },
     {
-      "key": "animateWhenStopped",
-      "label": "Animate stroke when stopped (test)",
-      "type": "checkbox",
-      "default": true,
-      "description": "Keep rowing at Demo SPM while stationary so you can preview the animation at 0 km/h."
-    },
-    {
-      "key": "demoSpm",
-      "label": "Demo / fallback stroke rate (SPM)",
-      "type": "number",
-      "default": 24,
-      "description": "Strokes per minute used when no live BLE rower stroke rate is present."
+      "key": "colorSource",
+      "label": "Rowbike color theme",
+      "type": "select",
+      "options": ["rider_bike", "custom"],
+      "default": "rider_bike",
+      "description": "rider_bike = use each rider's Biketerra bike_frame_color for the frame, its opposite/complementary color for the rowing lever, and bike_sidewall_color for the tires; custom = use the custom colors below."
     },
     {
       "key": "frameColor",
-      "label": "Rowbike rail & frame color",
+      "label": "Custom rail & frame color",
       "type": "color",
       "default": "#c8242b",
-      "description": "Primary frame / sliding seat rail color (720 Sport red by default)."
+      "description": "Primary frame / sliding seat rail color when 'custom' is selected (720 Sport red by default)."
     },
     {
       "key": "leverColor",
-      "label": "Rowing lever color",
+      "label": "Custom rowing lever color",
       "type": "color",
       "default": "#243ea8",
-      "description": "Pivoting rowing power arm color (720 Sport blue by default)."
-    },
-    {
-      "key": "showStatusPill",
-      "label": "Show test status / toggle pill",
-      "type": "checkbox",
-      "default": true,
-      "description": "Show a small bottom-left pill to toggle Rowbike on/off and view WebGPU diagnostic status."
+      "description": "Pivoting rowing power arm color when 'custom' is selected (720 Sport blue by default)."
     }
   ]
 }
