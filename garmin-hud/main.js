@@ -243,6 +243,7 @@
     'kph': speedGraph,
     'mph': speedGraph,
   };
+  graphs['spm'] = graphs['rpm'];
 
   // ---- Live telemetry priority:
   //   1. window.btApp.riderController (focalRider / ego)
@@ -250,6 +251,7 @@
   //   3. DOM scraping (.stat-cell .stat-value)
   let rideFrame = null;
   let offRide = null;
+  let rideBroadcastChannel = null;
   let lastFeedAt = 0;
   let activeSource = null; // 'btApp' | 'ride' | 'dom'
   const FEED_FRESH_MS = 2500;
@@ -286,7 +288,7 @@
     if (!rider || typeof rider !== 'object') return null;
     const srcs = [rider.sim, rider, rider.userData, rider.stats, rider.state, rider.telemetry];
     if (unit === 'W')   return pickNum(srcs, ['power', 'watts', 'wattage']);
-    if (unit === 'rpm') return pickNum(srcs, ['cadence', 'cad', 'rpm', 'cadenceRpm']);
+    if (unit === 'rpm' || unit === 'spm') return pickNum(srcs, ['cadence', 'cad', 'rpm', 'spm', 'cadenceRpm']);
     if (unit === 'bpm') return pickNum(srcs, ['heartRate', 'hr', 'heart_rate', 'bpm']);
     if (unit === 'kph' || unit === 'mph') {
       const kph = pickNum(srcs, ['speedKph', 'speedKmh', 'speed_kmh', 'kph']);
@@ -328,30 +330,66 @@
   function resolveFeedObject(rc, btRider) {
     if (!rideFrame) return null;
     const isSpectatingOther = !!(rc && rc.ego && btRider && btRider !== rc.ego);
-    if (btRider && (isSpectatingOther || window.location.pathname.includes('/spectate'))) {
-      const { id, name } = riderIdentity(btRider);
-      if (Array.isArray(rideFrame.riders)) {
-        for (const r of rideFrame.riders) {
-          if (!r || typeof r !== 'object') continue;
-          if (id != null && r.id != null && String(r.id) === String(id)) return r;
-          if (name && r.name && String(r.name).trim().toLowerCase() === name) return r;
-        }
+    const matchInRiders = (targetRider) => {
+      if (!targetRider || !Array.isArray(rideFrame.riders)) return null;
+      const { id, name } = riderIdentity(targetRider);
+      for (const r of rideFrame.riders) {
+        if (!r || typeof r !== 'object') continue;
+        if (id != null && r.id != null && String(r.id) === String(id)) return r;
+        if (name && r.name && String(r.name).trim().toLowerCase() === name) return r;
       }
+      return null;
+    };
+    if (btRider && (isSpectatingOther || window.location.pathname.includes('/spectate'))) {
+      const matched = matchInRiders(btRider);
+      if (matched) return matched;
       if (isSpectatingOther) return null;
     }
-    return rideFrame.ego || null;
+    const egoObj = (rideFrame.ego && typeof rideFrame.ego === 'object') ? rideFrame.ego : null;
+    const matchedEgo = matchInRiders(btRider || (rc && rc.ego));
+    if (egoObj && matchedEgo && egoObj !== matchedEgo) {
+      const merged = { ...matchedEgo, ...egoObj };
+      for (const [k, v] of Object.entries(matchedEgo)) {
+        if (finiteNum(v) && !finiteNum(egoObj[k])) merged[k] = v;
+      }
+      return merged;
+    }
+    return egoObj || matchedEgo || rideFrame;
   }
 
   function readFeedMetric(feedObj, unit) {
     if (!feedObj || typeof feedObj !== 'object') return null;
     const srcs = [feedObj];
-    if (unit === 'W')   return pickNum(srcs, ['power', 'watts', 'wattage']);
-    if (unit === 'rpm') return pickNum(srcs, ['cadence', 'cad', 'rpm', 'cadenceRpm']);
-    if (unit === 'bpm') return pickNum(srcs, ['heartRate', 'hr', 'heart_rate', 'bpm']);
+    if (rideFrame && typeof rideFrame === 'object' && feedObj !== rideFrame) {
+      if (rideFrame.ego && typeof rideFrame.ego === 'object' && rideFrame.ego !== feedObj) {
+        srcs.push(rideFrame.ego);
+      }
+      if (Array.isArray(rideFrame.riders) && rideFrame.riders.length === 1 && rideFrame.riders[0] && rideFrame.riders[0] !== feedObj) {
+        srcs.push(rideFrame.riders[0]);
+      }
+      srcs.push(rideFrame);
+    }
+    const pickBest = (keys) => {
+      let fallback = null;
+      for (const src of srcs) {
+        if (!src || typeof src !== 'object') continue;
+        for (const k of keys) {
+          const n = finiteNum(src[k]);
+          if (n !== null) {
+            if (n > 0) return n;
+            if (fallback === null) fallback = n;
+          }
+        }
+      }
+      return fallback;
+    };
+    if (unit === 'W')   return pickBest(['power', 'watts', 'wattage']);
+    if (unit === 'rpm' || unit === 'spm') return pickBest(['cadence', 'cad', 'rpm', 'spm', 'cadenceRpm']);
+    if (unit === 'bpm') return pickBest(['heartRate', 'hr', 'heart_rate', 'bpm']);
     if (unit === 'kph' || unit === 'mph') {
-      const kph = pickNum(srcs, ['speedKph', 'speedKmh', 'speed_kmh', 'kph']);
+      const kph = pickBest(['speedKph', 'speedKmh', 'speed_kmh', 'kph']);
       if (kph !== null) return kph;
-      const ms = pickNum(srcs, ['speed', 'speedMs', 'vel']);
+      const ms = pickBest(['speed', 'speedMs', 'vel']);
       if (ms !== null) return ms * 3.6;
     }
     return null;
@@ -371,29 +409,40 @@
     }
   }
 
+  function handleRideFrame(frame) {
+    if (!frame || typeof frame !== 'object') return;
+    rideFrame = frame;
+    lastFeedAt = performance.now();
+    const rc = getBtController();
+    const btRider = getBtRider(rc);
+    if (!btHasAnyMetric(btRider)) {
+      noteSource('ride');
+      tick();
+    }
+  }
+
   function initRideFeed() {
-    if (typeof terra === 'undefined' || !terra.ride) return;
-    if (terra.ride.latest) {
-      const seed = terra.ride.latest();
-      if (seed) {
-        rideFrame = seed;
-        if (seed.timestamp && Math.abs(Date.now() - seed.timestamp) < FEED_FRESH_MS) {
-          lastFeedAt = performance.now();
+    if (typeof terra !== 'undefined' && terra.ride) {
+      if (terra.ride.latest) {
+        const seed = terra.ride.latest();
+        if (seed) {
+          rideFrame = seed;
+          if (!seed.timestamp || Math.abs(Date.now() - seed.timestamp) < FEED_FRESH_MS) {
+            lastFeedAt = performance.now();
+          }
         }
       }
+      if (terra.ride.onRide) {
+        offRide = terra.ride.onRide(handleRideFrame);
+      }
     }
-    if (terra.ride.onRide) {
-      offRide = terra.ride.onRide((frame) => {
-        if (!frame) return;
-        rideFrame = frame;
-        lastFeedAt = performance.now();
-        const rc = getBtController();
-        const btRider = getBtRider(rc);
-        if (!btHasAnyMetric(btRider)) {
-          noteSource('ride');
-          tick();
-        }
-      });
+    if (typeof BroadcastChannel !== 'undefined' && !rideBroadcastChannel) {
+      try {
+        rideBroadcastChannel = new BroadcastChannel('biketerra-ride');
+        rideBroadcastChannel.addEventListener('message', (e) => {
+          if (e && e.data) handleRideFrame(e.data);
+        });
+      } catch {}
     }
   }
 
@@ -448,7 +497,9 @@
 
       const st = feedMetricState[graphInfo.type];
       if (st) {
-        const feedTs = (isFeedFresh && rideFrame && rideFrame.timestamp) ? rideFrame.timestamp : 0;
+        const feedTs = (isFeedFresh && rideFrame)
+          ? ((typeof rideFrame.timestamp === 'number' && rideFrame.timestamp > 0) ? rideFrame.timestamp : lastFeedAt)
+          : 0;
         if (st.val !== null) {
           if (feedTs > 0) {
             if (feedTs === st.feedTs) return;
@@ -711,6 +762,10 @@
       terra.onCleanup(() => {
         if (renderInterval) clearInterval(renderInterval);
         if (offRide) offRide();
+        if (rideBroadcastChannel) {
+          try { rideBroadcastChannel.close(); } catch {}
+          rideBroadcastChannel = null;
+        }
         document.querySelectorAll('.stat-cell').forEach((cell) => {
           cell.querySelectorAll('canvas.terra-dark-graph').forEach((c) => c.remove());
           for (const ch of cell.children) {

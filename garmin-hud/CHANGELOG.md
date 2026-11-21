@@ -1,3 +1,6 @@
+## 1.4.2
+- Subscribe directly to `BroadcastChannel('biketerra-ride')` alongside `terra.ride.onRide`, merge `ego` and `riders` feed entries, support `spm` cadence units, and fix feed timestamp deduplication when `frame.timestamp` is omitted
+
 ## 1.4.1
 - Switch cadence and heart rate back to biketerra-ride while keeping power on btApp
 
