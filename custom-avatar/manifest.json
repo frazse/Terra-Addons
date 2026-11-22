@@ -1,0 +1,72 @@
+{
+  "id": "custom-avatar",
+  "name": "Custom 3D Avatar",
+  "version": "0.1.0",
+  "category": "Camera",
+  "description": "Import custom rigged .glb 3D avatars (Half-Life 2, World of Warcraft, Mixamo, VRM) and drive them live with Biketerra's pedaling & steering animations.",
+  "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate*"],
+  "js": ["main.js"],
+  "css": ["style.css"],
+  "enabled": true,
+  "settings": [
+    {
+      "key": "enabledMode",
+      "label": "Avatar replacement",
+      "type": "select",
+      "options": ["active", "off"],
+      "default": "active",
+      "description": "active = replace your rider with the selected .glb avatar; off = keep default Biketerra rider."
+    },
+    {
+      "key": "animationMode",
+      "label": "Animation retargeting",
+      "type": "select",
+      "options": ["retarget_ik", "rigid_rider"],
+      "default": "retarget_ik",
+      "description": "retarget_ik = live Biketerra spine/head pose + 2-bone IK locking feet to pedals and hands to bars; rigid_rider = attach whole model rigidly to rider."
+    },
+    {
+      "key": "scale",
+      "label": "Scale multiplier",
+      "type": "number",
+      "default": 1.0,
+      "description": "Multiplier applied on top of automatic height normalization (e.g. 0.9 to 1.2)."
+    },
+    {
+      "key": "seatOffsetY",
+      "label": "Vertical seat offset (m)",
+      "type": "number",
+      "default": 0.0,
+      "description": "Fine-tune avatar vertical position on the saddle in meters (+ up, - down)."
+    },
+    {
+      "key": "seatOffsetZ",
+      "label": "Fore/aft seat offset (m)",
+      "type": "number",
+      "default": 0.0,
+      "description": "Fine-tune avatar fore/aft position on the saddle in meters (- forward, + back)."
+    },
+    {
+      "key": "facingOffsetDeg",
+      "label": "Facing direction override",
+      "type": "select",
+      "options": ["auto", "0", "90", "180", "-90"],
+      "default": "auto",
+      "description": "auto detects facing from left/right bones; override in degrees if an imported model faces sideways or backward."
+    },
+    {
+      "key": "castShadow",
+      "label": "Cast ground shadow",
+      "type": "checkbox",
+      "default": true,
+      "description": "Project an animated ground shadow of the custom avatar onto the road."
+    },
+    {
+      "key": "hideNativeBody",
+      "label": "Hide default Biketerra rider",
+      "type": "checkbox",
+      "default": true,
+      "description": "Uncheck temporarily to overlap the custom avatar with Biketerra's native rider for scale/alignment tuning."
+    }
+  ]
+}
