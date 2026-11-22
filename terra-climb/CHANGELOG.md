@@ -1,3 +1,6 @@
+## 0.2.1
+- Fixed the conquered-climb shading overlay appearing ahead of the rider cursor by locking its right edge directly to the live rider marker position.
+
 ## 0.2.0
 - Initial release of Terra ClimbPro: single-row docked HUD in Biketerra's elevation panel with live Draft bar, tilted-slope Grade indicator, native road dial replacement, and automatic climb categorization (`HC`, `CAT 1`–`CAT 4`, `WALL`, `CLIMB`).
 - Mountain Stage Roadmap overlays directly on Biketerra's zoomed elevation graph: conquered-portion dimming behind the cursor, approach-only `START` hairline, checkered `TOP` summit line, Tour-style `km-to-summit` milestone ticks, and automatic steepest `▲ Crux` & `▼ Relief` breather pins.

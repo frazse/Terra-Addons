@@ -1370,7 +1370,7 @@ svg.tr-cp-svg-zoomed line {
     return ov;
   }
 
-  function updateGraphOverlaysFor(graph, vb, curVb) {
+  function updateGraphOverlaysFor(graph, vb, curVb, cursorPos = null) {
     if (!graph || !currentOverlayMeta || !currentOverlayMeta.route) {
       clearGraphOverlays(graph);
       return;
@@ -1520,16 +1520,68 @@ svg.tr-cp-svg-zoomed line {
     const ov = ensureGraphOverlayEl(graph, climb);
     if (!ov) return;
 
-    // 1. Conquered mountain scrim behind cursor
+    // 1. Conquered mountain scrim behind cursor (locked to the live rider marker)
     const conqEl = ov.querySelector('.tr-cp-conquered');
     if (conqEl) {
       if ((mode === 'active' || mode === 'summit') && !isInspected && curDist > climb.startDist) {
-        const curPct = clamp(toPct(curDist), 0, 100);
-        if (curPct > 0.3) {
-          conqEl.style.display = '';
-          conqEl.style.width = `${curPct.toFixed(3)}%`;
-        } else {
-          conqEl.style.display = 'none';
+        let applied = false;
+        const ovRect = ov.getBoundingClientRect ? ov.getBoundingClientRect() : null;
+
+        if (cursorPos && Number.isFinite(cursorPos.screenX) && ovRect && ovRect.width > 0) {
+          const ovLeft = ovRect.left + (ov.clientLeft || 0);
+          const wPx = clamp(cursorPos.screenX - ovLeft, 0, ovRect.width);
+          if (wPx > 0.5) {
+            conqEl.style.display = '';
+            conqEl.style.width = `${wPx.toFixed(2)}px`;
+          } else {
+            conqEl.style.display = 'none';
+          }
+          applied = true;
+        }
+
+        if (!applied && !cursorPos && graph.querySelector) {
+          const origCursor = graph.querySelector('.elev-cursor');
+          if (origCursor) {
+            const isZoomed = graph.classList && graph.classList.contains('tr-cp-elev-zoomed');
+            const cRect = (!isZoomed && origCursor.getBoundingClientRect) ? origCursor.getBoundingClientRect() : null;
+            if (cRect && (cRect.width > 0 || cRect.left > 0) && ovRect && ovRect.width > 0) {
+              const ovLeft = ovRect.left + (ov.clientLeft || 0);
+              const wPx = clamp((cRect.left + cRect.width / 2) - ovLeft, 0, ovRect.width);
+              if (wPx > 0.5) {
+                conqEl.style.display = '';
+                conqEl.style.width = `${wPx.toFixed(2)}px`;
+              } else {
+                conqEl.style.display = 'none';
+              }
+              applied = true;
+            } else if (!detectedNativeBox) {
+              const m = String(origCursor.style.left || '').match(/(-?\d+(?:\.\d+)?)%/);
+              if (m) {
+                const riderFrac = clamp(parseFloat(m[1]) / 100, 0, 1);
+                const svgX = vb.x + riderFrac * vb.w;
+                const curPct = clamp(((svgX - curVb.x) / curVb.w) * 100, 0, 100);
+                if (curPct > 0.3) {
+                  conqEl.style.display = '';
+                  conqEl.style.width = `${curPct.toFixed(3)}%`;
+                } else {
+                  conqEl.style.display = 'none';
+                }
+                applied = true;
+              }
+            }
+          }
+        }
+
+        if (!applied) {
+          const curPct = cursorPos && Number.isFinite(cursorPos.frac)
+            ? clamp(cursorPos.frac * 100, 0, 100)
+            : clamp(toPct(curDist), 0, 100);
+          if (curPct > 0.3) {
+            conqEl.style.display = '';
+            conqEl.style.width = `${curPct.toFixed(3)}%`;
+          } else {
+            conqEl.style.display = 'none';
+          }
         }
       } else {
         conqEl.style.display = 'none';
@@ -1627,7 +1679,7 @@ svg.tr-cp-svg-zoomed line {
         lastCursorHidden = true;
         trCursor.style.display = 'none';
       }
-      updateGraphOverlaysFor(graph, vb, curVb);
+      updateGraphOverlaysFor(graph, vb, curVb, { frac: zoomedFrac, screenX: null });
       return;
     }
     if (lastCursorHidden) {
@@ -1648,11 +1700,13 @@ svg.tr-cp-svg-zoomed line {
     const svgRect = svg.getBoundingClientRect ? svg.getBoundingClientRect() : null;
     const graphRect = graph.getBoundingClientRect ? graph.getBoundingClientRect() : null;
     const refRect = (svgRect && svgRect.width > 0) ? svgRect : (graphRect && graphRect.width > 0 ? graphRect : null);
+    let cursorScreenX = null;
 
     if (refRect && refRect.width > 0) {
       const targetCenterX = refRect.left + frac * refRect.width;
       const rawScreenX = targetCenterX - cssW / 2;
       const snappedScreenX = Math.round(rawScreenX * dpr) / dpr;
+      cursorScreenX = snappedScreenX + cssW / 2;
       const op = trCursor.offsetParent || graph;
       const opRect = (op && op.getBoundingClientRect) ? op.getBoundingClientRect() : null;
       const originX = (opRect && opRect.width > 0)
@@ -1672,7 +1726,7 @@ svg.tr-cp-svg-zoomed line {
       }
     }
 
-    updateGraphOverlaysFor(graph, vb, curVb);
+    updateGraphOverlaysFor(graph, vb, curVb, { frac: zoomedFrac, screenX: cursorScreenX });
   }
 
   function updateZoomedCursor() {
