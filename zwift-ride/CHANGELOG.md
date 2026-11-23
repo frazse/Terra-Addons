@@ -1,3 +1,6 @@
+## 0.6.6
+- Fix Z-tab cycling (`cycleTopNav`) on activity and other off-tab pages to return directly to `/dashboard` instead of jumping to `/routes`
+
 ## 0.6.5
 - Add `group_view` command (`group-spectate:toggle-ego`) bound by default to `LB + Right Power` when LB modifier is enabled
 

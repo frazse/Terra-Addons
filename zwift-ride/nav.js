@@ -349,12 +349,15 @@ function select() {
 function cycleTopNav(step = 1) {
   const liveLinks = [...document.querySelectorAll('header .nav-links a.nav-link[href^="/"], .nav-links a.nav-link[href^="/"]')]
     .map((a) => a.getAttribute('href'))
-    .filter((h) => h && !h.startsWith('//'));
+    .filter((h) => h && h !== '/' && !h.startsWith('//'));
   const order = liveLinks.length
-    ? ['/dashboard', ...liveLinks.filter((h) => h !== '/dashboard')]
+    ? ['/dashboard', ...new Set(liveLinks.filter((h) => h !== '/dashboard'))]
     : ['/dashboard', '/routes', '/events', '/clubs', '/badges'];
-  const curIdx = order.findIndex((p) => location.pathname.startsWith(p));
-  const nextPath = order[((curIdx >= 0 ? curIdx : 0) + step + order.length) % order.length];
+  const curIdx = order.findIndex((p) => location.pathname === p || location.pathname.startsWith(p + '/'));
+  // Off-tab pages (e.g. /activities/:id) return directly to Dashboard instead of advancing to Routes
+  const nextPath = curIdx >= 0
+    ? order[(curIdx + step + order.length) % order.length]
+    : order[0];
   const navLink = [...document.querySelectorAll('.nav-links a.nav-link, a[href]')].find(
     (a) => a.getAttribute('href') === nextPath
   );
