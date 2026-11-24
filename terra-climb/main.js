@@ -2182,7 +2182,23 @@ svg.tr-cp-svg-zoomed line {
         grades[i] = clamp(((pts[fwd].y - pts[back].y) / span) * 100, -35, 35);
       }
 
-      cachedRoute = { listRef: list, pts, dist, grades, totalLen, isLoop, n };
+      let totalAscent = 0;
+      let totalDescent = 0;
+      let prevSampleY = pts[0].y;
+      let nextSampleD = 20;
+      for (let i = 1; i < n; i++) {
+        if (dist[i] >= nextSampleD || i === n - 1) {
+          const dy = pts[i].y - prevSampleY;
+          if (dy > 0) totalAscent += dy;
+          else if (dy < 0) totalDescent += -dy;
+          prevSampleY = pts[i].y;
+          nextSampleD = dist[i] + 20;
+        }
+      }
+      const netElev = pts[n - 1].y - pts[0].y;
+      const avgGrade = (netElev / totalLen) * 100;
+
+      cachedRoute = { listRef: list, pts, dist, grades, totalLen, isLoop, n, netElev, avgGrade, totalAscent, totalDescent };
       cachedClimbsKey = '';
       inspectedClimbIndex = null;
       lastActiveClimb = null;
@@ -2618,6 +2634,33 @@ svg.tr-cp-svg-zoomed line {
     return `${Math.round(m)} m`;
   }
 
+  function describeNoClimbRoute(route) {
+    if (!route || !(route.totalLen > 0)) {
+      return { title: 'Flat Route', detail: 'No climbs detected', expandedTitle: 'No Climbs Detected' };
+    }
+    const { netElev = 0, avgGrade = 0, totalAscent = 0, totalDescent = 0, totalLen } = route;
+    const km = Math.max(0.1, totalLen / 1000);
+    if (netElev <= -25 && avgGrade <= -1.0 && totalDescent >= totalAscent * 1.5) {
+      return {
+        title: 'Downhill Route',
+        detail: `-${fmtElev(Math.abs(netElev))} \u00b7 ${avgGrade.toFixed(1)}% avg`,
+        expandedTitle: `Downhill Route (-${fmtElev(Math.abs(netElev))})`,
+      };
+    }
+    if (totalAscent >= 50 && (totalAscent / km) >= 10) {
+      return {
+        title: 'Rolling Route',
+        detail: `+${fmtElev(totalAscent)} \u00b7 no major climbs`,
+        expandedTitle: 'Rolling Route',
+      };
+    }
+    return {
+      title: 'Flat Route',
+      detail: 'No climbs detected',
+      expandedTitle: 'No Climbs Detected',
+    };
+  }
+
   /* ---------- Time-Adaptive Quiet Shift-Ahead Callout ---------- */
   function computeShiftCallout(climb, distIntoClimb, distLeft, curGrade) {
     if (!climb || !climb.segments || !climb.segments.length) return null;
@@ -2992,9 +3035,13 @@ svg.tr-cp-svg-zoomed line {
           const catLabel = c.cat ? c.cat.label : 'CLIMB';
           els.title.textContent = `Next ${catLabel} #${c.index}/${c.totalClimbs}`;
           els.compactRow.innerHTML = `<span>In <strong>${fmtDist(view.distToStart)}</strong></span><span>${fmtDistShort(c.lengthM)} \u00b7 +${fmtElev(c.ascentM)} \u00b7 ${c.avgGrade.toFixed(1)}%</span>`;
+        } else if (totalClimbs) {
+          els.title.textContent = 'Climbs Done';
+          els.compactRow.textContent = `All ${totalClimbs} climb(s) completed`;
         } else {
-          els.title.textContent = totalClimbs ? 'Climbs Done' : 'Flat Route';
-          els.compactRow.textContent = totalClimbs ? `All ${totalClimbs} climb(s) completed` : 'No climbs detected';
+          const desc = describeNoClimbRoute(view.route);
+          els.title.textContent = desc.title;
+          els.compactRow.textContent = desc.detail;
         }
         syncRoadGauges();
         return;
@@ -3010,7 +3057,7 @@ svg.tr-cp-svg-zoomed line {
     if (!showClimb) {
       els.badge.className = 'tr-cp-badge flat';
       els.badge.textContent = 'CLIMBPRO';
-      els.title.textContent = totalClimbs ? 'All Climbs Completed' : 'No Climbs Detected';
+      els.title.textContent = totalClimbs ? 'All Climbs Completed' : describeNoClimbRoute(view.route).expandedTitle;
       els.kpis.style.display = 'none';
       setCalloutPill(els, null);
       renderDrawerList(els, view.allItems || [], null);
@@ -3279,5 +3326,5 @@ svg.tr-cp-svg-zoomed line {
     if (ui.root.parentNode) ui.root.remove();
   });
 
-  terra.log('terra-climb (Terra ClimbPro v0.2.0) ready');
+  terra.log('terra-climb (Terra ClimbPro v0.2.2) ready');
 })();

@@ -1,3 +1,6 @@
+## 0.2.2
+- Distinguish downhill and rolling routes instead of labeling all climb-free routes as `Flat Route` (shows `Downhill Route` with net elevation drop and average grade, or `Rolling Route` with total ascent when no major climbs are detected).
+
 ## 0.2.1
 - Fixed the conquered-climb shading overlay appearing ahead of the rider cursor by locking its right edge directly to the live rider marker position.
 

@@ -1,7 +1,7 @@
 {
   "id": "terra-climb",
   "name": "Terra ClimbPro",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "category": "HUD",
   "description": "First-principles ClimbPro built for Terra: single-row docked HUD with climb categories (Cat 4–HC / Wall), VAM-based time to summit, time-adaptive shift-ahead callouts, conquered-mountain dimming, km-to-summit markers, and automatic crux/relief pins directly on Biketerra's zoomed elevation graph.",
   "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
