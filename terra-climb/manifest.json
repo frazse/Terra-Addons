@@ -1,19 +1,35 @@
 {
   "id": "terra-climb",
   "name": "Terra ClimbPro",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "category": "HUD",
-  "description": "First-principles ClimbPro built for Terra: single-row docked HUD with climb categories (Cat 4–HC / Wall), 3D overhead Start & Summit gantry arches above the road at every climb, VAM-based time to summit, time-adaptive shift-ahead callouts, conquered-mountain dimming, km-to-summit markers, and automatic crux/relief pins directly on Biketerra's zoomed elevation graph.",
+  "description": "First-principles ClimbPro built for Terra: single-row docked HUD with climb categories (Cat 4–HC / Wall), selectable ClimbPro or processGPX (Fiets) climb detection, Biketerra-matched grade colors, 3D overhead Start & Summit gantry arches with native shadows, VAM-based time to summit, time-adaptive shift-ahead callouts, conquered-mountain dimming, km-to-summit markers, and automatic crux/relief pins directly on Biketerra's zoomed elevation graph.",
   "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
   "js": ["main.js"],
   "settings": [
+    {
+      "key": "detection_mode",
+      "label": "Climb detection algorithm",
+      "type": "select",
+      "default": "climbpro",
+      "options": ["climbpro", "processgpx"],
+      "description": "climbpro (Strava/Garmin-style forward pass with bench merging) or processgpx (djconnel/processGPX recursive Fiets optimizer: dz × (grade/10%)^p)."
+    },
     {
       "key": "sensitivity",
       "label": "Climb detection sensitivity",
       "type": "select",
       "default": "all",
       "options": ["all", "medium", "large"],
-      "description": "all (>=400m @ 3% or >=200m @ 6% walls), medium (Medium & Large), large (Large Only)."
+      "description": "ClimbPro: all (>=400m @ 3% or >=200m @ 6% walls), medium, large. processGPX: 10%-grade vertical threshold — all (10m), medium (20m, processGPX default), large (55m)."
+    },
+    {
+      "key": "processgpx_power",
+      "label": "processGPX steepness power (p)",
+      "type": "select",
+      "default": "0.5",
+      "options": ["0.5", "1.0", "1.5", "2.0"],
+      "description": "Only used when Climb detection algorithm is processgpx. 0.5 = whole climbs (autoSegments default), 1.0 = balanced, 1.5–2.0 = isolate steepest pitches."
     },
     {
       "key": "climb_arches_3d",

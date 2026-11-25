@@ -1,6 +1,8 @@
 (() => {
   const DEFAULTS = {
+    detection_mode: 'climbpro',
     sensitivity: 'all',
+    processgpx_power: '0.5',
     climb_arches_3d: true,
     graph_roadmap: true,
     shift_callout: true,
@@ -20,6 +22,13 @@
     all:    { minLen: 400, minAvgGrade: 3.0, minScore: 1200, punchyMinLen: 200, punchyMinGrade: 6.0, punchyMinScore: 1500 },
     medium: { minLen: 350, minAvgGrade: 3.0, minScore: 3000, punchyMinLen: 250, punchyMinGrade: 8.0, punchyMinScore: 2500 },
     large:  { minLen: 500, minAvgGrade: 3.0, minScore: 7500, punchyMinLen: 500, punchyMinGrade: 3.0, punchyMinScore: 7500 },
+  };
+
+  // processGPX 10%-grade vertical-meter thresholds (rating = dz * |10 * dz / ds|^p)
+  const PROCESSGPX_CFG = {
+    all:    { threshold: 10 }, // ~10m @ 10% (~18m @ 3%, ~13m @ 6% at p=0.5)
+    medium: { threshold: 20 }, // exact processGPX README default (-autoSegments 20 0.5)
+    large:  { threshold: 55 }, // ~55m @ 10% (~87m @ 4%, ~100m @ 3% at p=0.5)
   };
 
   let cachedRoute = null;
@@ -192,8 +201,8 @@
   top: 0;
   bottom: 0;
   width: 0%;
-  background: var(--success, #6dd44d);
-  opacity: 0.62;
+  background: #6dd44d;
+  opacity: 1;
   transition: width 0.15s ease-out;
   pointer-events: none;
 }
@@ -205,8 +214,8 @@
   line-height: 1;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--white-4, rgba(255, 255, 255, 0.85));
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.88);
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.92), 0 0 2px rgba(0, 0, 0, 0.78);
 }
 .tr-cp-draft-val {
   position: relative;
@@ -378,7 +387,7 @@
   height: 160%;
   transform-origin: 50% 0%;
   background: transparent;
-  opacity: 0.88;
+  opacity: 1;
   transition: transform 0.2s ease-out, background-color 0.2s ease-out;
   pointer-events: none;
 }
@@ -1044,19 +1053,39 @@ svg.tr-cp-svg-zoomed line {
   ui.root.addEventListener('pointerup', endDrag);
   ui.root.addEventListener('pointercancel', endDrag);
 
-  /* ---------- Gradient Palette & Cycling Climb Categorization ---------- */
+  /* ---------- Gradient Palette (Matches Biketerra Native Ramp) & Climb Categorization ---------- */
+  const BT_GRADE_STOPS = [
+    [-8, '#66BBFF'],
+    [-2, '#60F1AB'],
+    [ 5, '#F4FF00'],
+    [ 8, '#FF9800'],
+    [11, '#F25A00'],
+    [14, '#CC2020'],
+    [18, '#701010'],
+  ];
+  function hexChan(hex, idx) {
+    return parseInt(hex.slice(1 + idx * 2, 3 + idx * 2), 16);
+  }
   function gradeColor(g) {
-    if (g >= 20.0) return '#a855f7';
-    if (g >= 14.0) return '#e879f9';
-    if (g >= 11.0) return '#ef4444';
-    if (g >= 8.0)  return '#f97316';
-    if (g >= 5.0)  return '#facc15';
-    if (g >= 2.0)  return '#4ade80';
-    if (g >= -0.5) return '#94a3b8';
-    return '#38bdf8';
+    if (g < BT_GRADE_STOPS[0][0]) return '#0092FF';
+    const last = BT_GRADE_STOPS[BT_GRADE_STOPS.length - 1];
+    if (g >= last[0]) return last[1];
+    let r = 0;
+    while (r < BT_GRADE_STOPS.length - 2 && BT_GRADE_STOPS[r + 1][0] <= g) r++;
+    const g0 = BT_GRADE_STOPS[r][0], c0 = BT_GRADE_STOPS[r][1];
+    const g1 = BT_GRADE_STOPS[r + 1][0], c1 = BT_GRADE_STOPS[r + 1][1];
+    const t = (g - g0) / (g1 - g0);
+    const R = Math.round(hexChan(c0, 0) + t * (hexChan(c1, 0) - hexChan(c0, 0)));
+    const G = Math.round(hexChan(c0, 1) + t * (hexChan(c1, 1) - hexChan(c0, 1)));
+    const B = Math.round(hexChan(c0, 2) + t * (hexChan(c1, 2) - hexChan(c0, 2)));
+    return '#' + ((R << 16) | (G << 8) | B).toString(16).padStart(6, '0');
   }
   function isDarkColor(col) {
-    return col === '#ef4444' || col === '#a855f7';
+    if (typeof col !== 'string' || col[0] !== '#' || col.length < 7) return false;
+    const r = hexChan(col, 0) / 255;
+    const g = hexChan(col, 1) / 255;
+    const b = hexChan(col, 2) / 255;
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) < 0.50;
   }
 
   function classifyClimb(lengthM, avgGrade, score) {
@@ -2289,10 +2318,11 @@ svg.tr-cp-svg-zoomed line {
 
   const isImp = () => S.units === 'imperial';
 
-  function detectClimbs(route, sensKey) {
+  function detectClimbs(route, modeKey, sensKey, pgpxPowerVal) {
     const cfg = SENSITIVITY_CFG[sensKey] || SENSITIVITY_CFG.all;
     const totalLen = route.totalLen;
-    const absMinLen = Math.min(cfg.minLen, cfg.punchyMinLen || cfg.minLen);
+    const useProcessGpx = modeKey === 'processgpx';
+    const absMinLen = useProcessGpx ? 80 : Math.min(cfg.minLen, cfg.punchyMinLen || cfg.minLen);
     if (totalLen < absMinLen) return [];
 
     const STEP = 20;
@@ -2317,14 +2347,6 @@ svg.tr-cp-svg-zoomed line {
     const gridElev = smoothPass(gridRawY);
     const gridY = smoothPass(gridElev);
 
-    const gridSlope = new Float32Array(m);
-    for (let i = 0; i < m; i++) {
-      const lo = Math.max(0, i - 2);
-      const hi = Math.min(m - 1, i + 2);
-      const span = Math.max(1, gridD[hi] - gridD[lo]);
-      gridSlope[i] = ((gridY[hi] - gridY[lo]) / span) * 100;
-    }
-
     const sampleElev = (d) => {
       const clamped = clamp(d, 0, totalLen);
       const fi = clamped / STEP;
@@ -2335,141 +2357,18 @@ svg.tr-cp-svg-zoomed line {
       return gridElev[i0] + (gridElev[i1] - gridElev[i0]) * t;
     };
 
-    // Stage 1: Grade-aware seed extraction
-    const START_GRADE = 2.2;
-    const CONT_GRADE = 2.0;
-    const MAX_SEED_DIP_M = 8;
-    const MAX_SEED_FLAT_M = 200;
-
-    const seeds = [];
-    let inSeed = false;
-    let seedStart = 0;
-    let peakIdx = 0;
-    let peakY = gridY[0];
-    let lastActiveIdx = 0;
-    let runStart = -1;
-
-    const pushSeed = (sIdx, pIdx) => {
-      if (pIdx <= sIdx) return;
-      const len = gridD[pIdx] - gridD[sIdx];
-      const gain = gridElev[pIdx] - gridElev[sIdx];
-      if (len >= 80 && gain >= 3) seeds.push({ s: sIdx, e: pIdx });
-    };
-
-    for (let i = 0; i < m; i++) {
-      const y = gridY[i];
-      const sl = gridSlope[i];
-      if (!inSeed) {
-        if (sl >= START_GRADE) {
-          if (runStart < 0) runStart = Math.max(0, i - 1);
-          if (gridD[i] - gridD[runStart] >= 40 || y - gridY[runStart] >= 3) {
-            inSeed = true;
-            seedStart = runStart;
-            peakIdx = i;
-            peakY = y;
-            lastActiveIdx = i;
-          }
-        } else {
-          runStart = -1;
-        }
-      } else {
-        if (sl >= CONT_GRADE) lastActiveIdx = i;
-        if (y > peakY && (gridD[i] - gridD[lastActiveIdx]) <= 120) {
-          peakY = y;
-          peakIdx = i;
-        }
-        const drop = peakY - y;
-        const flatSpan = gridD[i] - gridD[lastActiveIdx];
-        if (drop >= MAX_SEED_DIP_M || flatSpan >= MAX_SEED_FLAT_M) {
-          pushSeed(seedStart, peakIdx);
-          inSeed = false;
-          runStart = sl >= START_GRADE ? Math.max(peakIdx, i - 1) : -1;
-        }
-      }
-    }
-    if (inSeed) pushSeed(seedStart, peakIdx);
-
-    // Stage 2: Merge adjacent seeds across short benches / dips
-    let merged = true;
-    while (merged && seeds.length > 1) {
-      merged = false;
-      for (let i = 0; i < seeds.length - 1; i++) {
-        const a = seeds[i];
-        const b = seeds[i + 1];
-        if (b.e <= a.e) {
-          seeds.splice(i + 1, 1);
-          merged = true;
-          break;
-        }
-        const gapLen = gridD[b.s] - gridD[a.e];
-        const lenA = gridD[a.e] - gridD[a.s];
-        const lenB = gridD[b.e] - gridD[b.s];
-        const gainA = gridElev[a.e] - gridElev[a.s];
-        const gainB = gridElev[b.e] - gridElev[b.s];
-        const combLen = gridD[b.e] - gridD[a.s];
-        const combGain = gridElev[b.e] - gridElev[a.s];
-        const combAvg = combLen > 0 ? (combGain / combLen) * 100 : 0;
-
-        let minGapY = gridY[a.e];
-        for (let k = Math.max(0, a.e); k <= Math.min(m - 1, b.s); k++) {
-          if (gridY[k] < minGapY) minGapY = gridY[k];
-        }
-        const gapDrop = Math.max(0, gridY[a.e] - minGapY);
-        const maxGap = Math.min(600, Math.max(250, 0.35 * (lenA + lenB)));
-        const maxDrop = Math.min(25, Math.max(12, 0.25 * (gainA + gainB)));
-
-        if (
-          gapLen <= maxGap &&
-          gapDrop <= maxDrop &&
-          combGain > Math.max(gainA, gainB) &&
-          combAvg >= Math.max(2.6, cfg.minAvgGrade - 0.3)
-        ) {
-          a.e = b.e;
-          seeds.splice(i + 1, 1);
-          merged = true;
-          break;
-        }
-      }
-    }
-
-    // Stage 3: Trim edges, qualify, categorize, build 50m segments & roadmap landmarks
-    const rawClimbs = [];
-    const segM = 50;
-
-    for (const seed of seeds) {
-      let sIdx = seed.s;
-      let pIdx = seed.e;
-
-      while (sIdx + 2 <= pIdx) {
-        const segD = Math.max(1, gridD[sIdx + 2] - gridD[sIdx]);
-        const segG = ((gridY[sIdx + 2] - gridY[sIdx]) / segD) * 100;
-        if (segG < 2.0) sIdx++;
-        else break;
-      }
-      while (pIdx - 2 >= sIdx) {
-        const segD = Math.max(1, gridD[pIdx] - gridD[pIdx - 2]);
-        const segG = ((gridY[pIdx] - gridY[pIdx - 2]) / segD) * 100;
-        if (segG < 1.0) pIdx--;
-        else break;
-      }
-      if (pIdx <= sIdx) continue;
-
+    const buildClimbRecord = (sIdx, pIdx) => {
       const startDist = gridD[sIdx];
       const endDist = gridD[pIdx];
       const lengthM = endDist - startDist;
       const startElev = gridElev[sIdx];
       const endElev = gridElev[pIdx];
       const netGain = endElev - startElev;
-      const avgGrade = lengthM > 0 ? (netGain / lengthM) * 100 : 0;
+      if (!(lengthM > 0) || !(netGain > 0)) return null;
+      const avgGrade = (netGain / lengthM) * 100;
       const score = lengthM * avgGrade;
 
-      const passesStd = lengthM >= cfg.minLen && avgGrade >= cfg.minAvgGrade && score >= cfg.minScore;
-      const passesPunchy =
-        lengthM >= (cfg.punchyMinLen || cfg.minLen) &&
-        avgGrade >= (cfg.punchyMinGrade || cfg.minAvgGrade) &&
-        score >= (cfg.punchyMinScore || cfg.minScore);
-      if (!(passesStd || passesPunchy) || netGain <= 0) continue;
-
+      const segM = 50;
       const segments = [];
       let segStart = startDist;
       while (segStart < endDist - 1) {
@@ -2512,7 +2411,302 @@ svg.tr-cp-svg-zoomed line {
         landmarks: [],
       };
       climbObj.landmarks = findClimbLandmarks(climbObj);
-      rawClimbs.push(climbObj);
+      return climbObj;
+    };
+
+    const rawClimbs = [];
+
+    if (useProcessGpx) {
+      // Faithful port of djconnel/processGPX: climbRating, simplifyProfile, recursive findClimbs, 5% peak/valley stretch
+      const p = clamp(Number.isFinite(pgpxPowerVal) ? pgpxPowerVal : 0.5, 0.25, 3.0);
+      const pgpxCfg = PROCESSGPX_CFG[sensKey] || PROCESSGPX_CFG.medium;
+      const threshold = pgpxCfg.threshold;
+
+      const pgpxRating = (i, j) => {
+        const ds = gridD[j] - gridD[i];
+        if (!(ds > 0)) return 0;
+        const dz = gridY[j] - gridY[i];
+        if (dz === 0) return 0;
+        return dz * Math.pow(Math.abs((10 * dz) / ds), p);
+      };
+
+      const simplifyMonotonic = (idxList) => {
+        const len = idxList.length;
+        const first = idxList[0];
+        const last = idxList[len - 1];
+        const dz = gridY[last] - gridY[first];
+        const ds = gridD[last] - gridD[first];
+        const sign = dz > 0 ? 1 : (dz < 0 ? -1 : 0);
+        if (len <= 2 || Math.abs(dz) < 1 || ds < 50 || sign === 0) {
+          return [last];
+        }
+
+        const gAvg = dz / ds;
+        let gMax = 1.1 * gAvg;
+        let igMax = -1;
+        for (let i = 0; i < len - 1; i++) {
+          const stepDs = gridD[idxList[i + 1]] - gridD[idxList[i]];
+          if (stepDs > 0) {
+            const g = (gridY[idxList[i + 1]] - gridY[idxList[i]]) / stepDs;
+            if (g * sign > gMax * sign) {
+              gMax = g;
+              igMax = i;
+            }
+          }
+        }
+        if (igMax < 0) return [last];
+
+        let i1 = igMax;
+        let i2 = igMax + 1;
+        while (i1 > 0 || i2 < len - 1) {
+          const rCur = sign * pgpxRating(idxList[i1], idxList[i2]);
+          const r1 = i1 > 0 ? sign * pgpxRating(idxList[i1 - 1], idxList[i2]) : 0;
+          const r2 = i2 < len - 1 ? sign * pgpxRating(idxList[i1], idxList[i2 + 1]) : 0;
+          if (r1 > rCur && r1 > r2) i1--;
+          else if (r2 > rCur && r2 > r1) i2++;
+          else break;
+        }
+
+        const out = [];
+        const pushUniq = (v) => { if (!out.length || out[out.length - 1] !== v) out.push(v); };
+        if (i1 > 0) {
+          const left = simplifyMonotonic(idxList.slice(0, i1 + 1));
+          for (let k = 0; k < left.length; k++) pushUniq(left[k]);
+        }
+        pushUniq(idxList[i2]);
+        if (i2 < len - 1) {
+          const right = simplifyMonotonic(idxList.slice(i2));
+          for (let k = 0; k < right.length; k++) pushUniq(right[k]);
+        }
+        return out;
+      };
+
+      // Extract local extrema and simplify each monotonic segment between them
+      const cmp = (a, b) => (a < b ? -1 : (a > b ? 1 : 0));
+      const keypoints = [0];
+      const simplified = [0];
+      const pushSimp = (arr) => {
+        for (let k = 0; k < arr.length; k++) {
+          if (simplified[simplified.length - 1] !== arr[k]) simplified.push(arr[k]);
+        }
+      };
+      for (let i = 1; i < m - 1; i++) {
+        if (cmp(gridY[i - 1], gridY[i]) !== cmp(gridY[i], gridY[i + 1])) {
+          const prevKp = keypoints[keypoints.length - 1];
+          keypoints.push(i);
+          const slice = [];
+          for (let k = prevKp; k <= i; k++) slice.push(k);
+          pushSimp(simplifyMonotonic(slice));
+        }
+      }
+      {
+        const lastKp = keypoints[keypoints.length - 1];
+        const slice = [];
+        for (let k = lastKp; k < m; k++) slice.push(k);
+        pushSimp(simplifyMonotonic(slice));
+      }
+
+      // Recursive divide-and-conquer search for maximum-rating climb intervals above threshold
+      const foundPairs = [];
+      const findRecursive = (subIdx) => {
+        const kLen = subIdx.length;
+        if (kLen < 2) return;
+        let bestR = threshold;
+        let bestI = -1;
+        let bestJ = -1;
+        for (let j = 1; j < kLen; j++) {
+          const gj = subIdx[j];
+          const yj = gridY[gj];
+          const dj = gridD[gj];
+          for (let i = 0; i < j; i++) {
+            const gi = subIdx[i];
+            const dz = yj - gridY[gi];
+            if (!(dz > 0)) continue;
+            const ds = dj - gridD[gi];
+            if (ds < 80) continue;
+            const r = dz * Math.pow((10 * dz) / ds, p);
+            if (r > bestR) {
+              bestR = r;
+              bestI = i;
+              bestJ = j;
+            }
+          }
+        }
+        if (bestI >= 0) {
+          if (bestI > 0) findRecursive(subIdx.slice(0, bestI + 1));
+          foundPairs.push([subIdx[bestI], subIdx[bestJ]]);
+          if (bestJ < kLen - 1) findRecursive(subIdx.slice(bestJ));
+        }
+      };
+      findRecursive(simplified);
+
+      // 5% peak/valley endpoint stretch (matches processGPX -autoSegmentStretch default 0.05)
+      const STRETCH = 0.05;
+      for (let c = 0; c < foundPairs.length; c++) {
+        let sIdx = foundPairs[c][0];
+        let pIdx = foundPairs[c][1];
+        const stretchD = STRETCH * (gridD[pIdx] - gridD[sIdx]);
+        const prevEnd = c > 0 ? foundPairs[c - 1][1] : 0;
+        const nextStart = c + 1 < foundPairs.length ? foundPairs[c + 1][0] : m - 1;
+
+        for (let j = sIdx - 1; j > prevEnd && (gridD[sIdx] - gridD[j]) < stretchD; j--) {
+          if (gridY[j + 1] > gridY[j] && gridY[j - 1] >= gridY[j]) {
+            sIdx = j;
+            break;
+          }
+        }
+        for (let j = pIdx + 1; j < nextStart && (gridD[j] - gridD[pIdx]) < stretchD; j++) {
+          if (gridY[j + 1] <= gridY[j] && gridY[j - 1] < gridY[j]) {
+            pIdx = j;
+            break;
+          }
+        }
+        foundPairs[c][0] = sIdx;
+        foundPairs[c][1] = pIdx;
+
+        const rec = buildClimbRecord(sIdx, pIdx);
+        if (rec) rawClimbs.push(rec);
+      }
+    } else {
+      const gridSlope = new Float32Array(m);
+      for (let i = 0; i < m; i++) {
+        const lo = Math.max(0, i - 2);
+        const hi = Math.min(m - 1, i + 2);
+        const span = Math.max(1, gridD[hi] - gridD[lo]);
+        gridSlope[i] = ((gridY[hi] - gridY[lo]) / span) * 100;
+      }
+
+      // Stage 1: Grade-aware seed extraction
+      const START_GRADE = 2.2;
+      const CONT_GRADE = 2.0;
+      const MAX_SEED_DIP_M = 8;
+      const MAX_SEED_FLAT_M = 200;
+
+      const seeds = [];
+      let inSeed = false;
+      let seedStart = 0;
+      let peakIdx = 0;
+      let peakY = gridY[0];
+      let lastActiveIdx = 0;
+      let runStart = -1;
+
+      const pushSeed = (sIdx, pIdx) => {
+        if (pIdx <= sIdx) return;
+        const len = gridD[pIdx] - gridD[sIdx];
+        const gain = gridElev[pIdx] - gridElev[sIdx];
+        if (len >= 80 && gain >= 3) seeds.push({ s: sIdx, e: pIdx });
+      };
+
+      for (let i = 0; i < m; i++) {
+        const y = gridY[i];
+        const sl = gridSlope[i];
+        if (!inSeed) {
+          if (sl >= START_GRADE) {
+            if (runStart < 0) runStart = Math.max(0, i - 1);
+            if (gridD[i] - gridD[runStart] >= 40 || y - gridY[runStart] >= 3) {
+              inSeed = true;
+              seedStart = runStart;
+              peakIdx = i;
+              peakY = y;
+              lastActiveIdx = i;
+            }
+          } else {
+            runStart = -1;
+          }
+        } else {
+          if (sl >= CONT_GRADE) lastActiveIdx = i;
+          if (y > peakY && (gridD[i] - gridD[lastActiveIdx]) <= 120) {
+            peakY = y;
+            peakIdx = i;
+          }
+          const drop = peakY - y;
+          const flatSpan = gridD[i] - gridD[lastActiveIdx];
+          if (drop >= MAX_SEED_DIP_M || flatSpan >= MAX_SEED_FLAT_M) {
+            pushSeed(seedStart, peakIdx);
+            inSeed = false;
+            runStart = sl >= START_GRADE ? Math.max(peakIdx, i - 1) : -1;
+          }
+        }
+      }
+      if (inSeed) pushSeed(seedStart, peakIdx);
+
+      // Stage 2: Merge adjacent seeds across short benches / dips
+      let merged = true;
+      while (merged && seeds.length > 1) {
+        merged = false;
+        for (let i = 0; i < seeds.length - 1; i++) {
+          const a = seeds[i];
+          const b = seeds[i + 1];
+          if (b.e <= a.e) {
+            seeds.splice(i + 1, 1);
+            merged = true;
+            break;
+          }
+          const gapLen = gridD[b.s] - gridD[a.e];
+          const lenA = gridD[a.e] - gridD[a.s];
+          const lenB = gridD[b.e] - gridD[b.s];
+          const gainA = gridElev[a.e] - gridElev[a.s];
+          const gainB = gridElev[b.e] - gridElev[b.s];
+          const combLen = gridD[b.e] - gridD[a.s];
+          const combGain = gridElev[b.e] - gridElev[a.s];
+          const combAvg = combLen > 0 ? (combGain / combLen) * 100 : 0;
+
+          let minGapY = gridY[a.e];
+          for (let k = Math.max(0, a.e); k <= Math.min(m - 1, b.s); k++) {
+            if (gridY[k] < minGapY) minGapY = gridY[k];
+          }
+          const gapDrop = Math.max(0, gridY[a.e] - minGapY);
+          const maxGap = Math.min(600, Math.max(250, 0.35 * (lenA + lenB)));
+          const maxDrop = Math.min(25, Math.max(12, 0.25 * (gainA + gainB)));
+
+          if (
+            gapLen <= maxGap &&
+            gapDrop <= maxDrop &&
+            combGain > Math.max(gainA, gainB) &&
+            combAvg >= Math.max(2.6, cfg.minAvgGrade - 0.3)
+          ) {
+            a.e = b.e;
+            seeds.splice(i + 1, 1);
+            merged = true;
+            break;
+          }
+        }
+      }
+
+      // Stage 3: Trim edges, qualify, categorize, build 50m segments & roadmap landmarks
+      for (const seed of seeds) {
+        let sIdx = seed.s;
+        let pIdx = seed.e;
+
+        while (sIdx + 2 <= pIdx) {
+          const segD = Math.max(1, gridD[sIdx + 2] - gridD[sIdx]);
+          const segG = ((gridY[sIdx + 2] - gridY[sIdx]) / segD) * 100;
+          if (segG < 2.0) sIdx++;
+          else break;
+        }
+        while (pIdx - 2 >= sIdx) {
+          const segD = Math.max(1, gridD[pIdx] - gridD[pIdx - 2]);
+          const segG = ((gridY[pIdx] - gridY[pIdx - 2]) / segD) * 100;
+          if (segG < 1.0) pIdx--;
+          else break;
+        }
+        if (pIdx <= sIdx) continue;
+
+        const lengthM = gridD[pIdx] - gridD[sIdx];
+        const netGain = gridElev[pIdx] - gridElev[sIdx];
+        const avgGrade = lengthM > 0 ? (netGain / lengthM) * 100 : 0;
+        const score = lengthM * avgGrade;
+
+        const passesStd = lengthM >= cfg.minLen && avgGrade >= cfg.minAvgGrade && score >= cfg.minScore;
+        const passesPunchy =
+          lengthM >= (cfg.punchyMinLen || cfg.minLen) &&
+          avgGrade >= (cfg.punchyMinGrade || cfg.minAvgGrade) &&
+          score >= (cfg.punchyMinScore || cfg.minScore);
+        if (!(passesStd || passesPunchy) || netGain <= 0) continue;
+
+        const rec = buildClimbRecord(sIdx, pIdx);
+        if (rec) rawClimbs.push(rec);
+      }
     }
 
     const totalClimbs = rawClimbs.length;
@@ -2809,7 +3003,13 @@ svg.tr-cp-svg-zoomed line {
         const pct = hm
           ? clamp(parseFloat(hm[1]), 0, 100)
           : (Number.isFinite(parsedVal) ? clamp(parsedVal, 0, 100) : 0);
-        const color = fillEl && fillEl.style && fillEl.style.backgroundColor ? fillEl.style.backgroundColor : '';
+        let color = fillEl && fillEl.style && fillEl.style.backgroundColor ? fillEl.style.backgroundColor : '';
+        if (!color && fillEl && typeof getComputedStyle === 'function') {
+          try {
+            const comp = getComputedStyle(fillEl).backgroundColor;
+            if (comp && comp !== 'transparent' && comp !== 'rgba(0, 0, 0, 0)') color = comp;
+          } catch {}
+        }
         return { text: rawTxt || String(Math.round(pct)), pct, color };
       }
     }
@@ -4604,12 +4804,19 @@ fn fs(in: VsOut) -> @location(0) vec4f {
     }
 
     const { route, focal, prev } = resolved;
+    const modeKey = S.detection_mode === 'processgpx' ? 'processgpx' : 'climbpro';
     const sensKey = SENSITIVITY_CFG[S.sensitivity] ? S.sensitivity : 'all';
-    const cacheKey = `${sensKey}`;
+    const pgpxPower = clamp(parseFloat(S.processgpx_power), 0.25, 3.0);
+    const cacheKey = modeKey === 'processgpx'
+      ? `processgpx|${sensKey}|${pgpxPower.toFixed(2)}`
+      : `climbpro|${sensKey}`;
     if (cachedClimbsKey !== cacheKey) {
-      cachedClimbs = detectClimbs(route, sensKey);
+      cachedClimbs = detectClimbs(route, modeKey, sensKey, pgpxPower);
       cachedClimbsKey = cacheKey;
       overlayBuiltKey = '';
+      inspectedClimbIndex = null;
+      lastActiveClimb = null;
+      summitHold = null;
     }
     syncArchSource(route, cachedClimbs);
 
@@ -4735,5 +4942,5 @@ fn fs(in: VsOut) -> @location(0) vec4f {
     if (ui.root.parentNode) ui.root.remove();
   });
 
-  terra.log('terra-climb (Terra ClimbPro v0.4.0) ready');
+  terra.log('terra-climb (Terra ClimbPro v0.5.0) ready');
 })();
