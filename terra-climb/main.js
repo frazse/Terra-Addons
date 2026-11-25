@@ -1,6 +1,7 @@
 (() => {
   const DEFAULTS = {
     sensitivity: 'all',
+    climb_arches_3d: true,
     graph_roadmap: true,
     shift_callout: true,
     show_eta: true,
@@ -2151,13 +2152,61 @@ svg.tr-cp-svg-zoomed line {
 
       const n = list.length;
       const pts = new Array(n);
+      const centerPts = new Array(n);
+      const widths = new Float32Array(n);
+      let hasExplicitCenter = false;
+
+      // Check if Biketerra exposes a separate road-centerline node list (e.g. currentRoadNode)
+      const roadNode = focal && focal.sim && focal.sim.currentRoadNode;
+      let roadList = null;
+      if (roadNode && roadNode !== prev) {
+        if (roadNode.pathNode && Array.isArray(roadNode.pathNode.list) && roadNode.pathNode.list.length === n && roadNode.pathNode.list !== list) {
+          roadList = roadNode.pathNode.list;
+        } else if (Array.isArray(roadNode.list) && roadNode.list.length === n && roadNode.list !== list) {
+          roadList = roadNode.list;
+        }
+      }
+
       for (let i = 0; i < n; i++) {
         const node = list[i];
         const inner = (node && node.pathNode) ? node.pathNode : node;
         const p = inner && (inner.p || inner.pos || inner.position);
         if (!p || typeof p.x !== 'number') return null;
         pts[i] = { x: p.x, y: Number.isFinite(p.y) ? p.y : 0, z: Number.isFinite(p.z) ? p.z : 0 };
+
+        // Check for explicit road-center coordinates on the node or parallel roadList
+        let cp = null;
+        if (roadList) {
+          const rn = roadList[i];
+          const ri = (rn && rn.pathNode) ? rn.pathNode : rn;
+          const rp = ri && (ri.p || ri.pos || ri.position);
+          if (rp && typeof rp.x === 'number') cp = rp;
+        }
+        if (!cp && inner) {
+          const cand = inner.roadCenter || inner.center || inner.roadPos || (inner.roadNode && inner.roadNode.p);
+          if (cand && typeof cand.x === 'number') cp = cand;
+        }
+        if (cp) {
+          centerPts[i] = { x: cp.x, y: Number.isFinite(cp.y) ? cp.y : pts[i].y, z: Number.isFinite(cp.z) ? cp.z : pts[i].z };
+          if (Math.hypot(cp.x - pts[i].x, cp.z - pts[i].z) > 0.05) hasExplicitCenter = true;
+        } else {
+          centerPts[i] = pts[i];
+        }
+
+        const rw = inner && (inner.roadWidth ?? inner.width ?? inner.w ?? (typeof inner.halfWidth === 'number' ? inner.halfWidth * 2 : null));
+        widths[i] = (typeof rw === 'number' && rw >= 3 && rw <= 24) ? rw : 6.0;
       }
+
+      // Detect left-hand vs right-hand driving side for lane-to-centerline fallback when no explicit center exists
+      const bt = window.btApp;
+      const sampleNode = list[0];
+      const sampleInner = (sampleNode && sampleNode.pathNode) ? sampleNode.pathNode : sampleNode;
+      const driveLeft = Boolean(
+        (bt && (bt.driveOnLeft || bt.leftHandTraffic || (bt.route && (bt.route.driveOnLeft || bt.route.leftHandTraffic)))) ||
+        (sampleInner && (sampleInner.driveOnLeft || sampleInner.leftHandTraffic))
+      );
+      // Biketerra's pathNode.p tracks the rider's driving lane (~1.75m right of the dashed centerline in RHT)
+      const laneCenterShift = hasExplicitCenter ? 0.0 : (driveLeft ? 1.75 : -1.75);
 
       const dist = new Float64Array(n);
       for (let i = 1; i < n; i++) {
@@ -2198,7 +2247,10 @@ svg.tr-cp-svg-zoomed line {
       const netElev = pts[n - 1].y - pts[0].y;
       const avgGrade = (netElev / totalLen) * 100;
 
-      cachedRoute = { listRef: list, pts, dist, grades, totalLen, isLoop, n, netElev, avgGrade, totalAscent, totalDescent };
+      cachedRoute = {
+        listRef: list, pts, centerPts, hasExplicitCenter, laneCenterShift,
+        widths, dist, grades, totalLen, isLoop, n, netElev, avgGrade, totalAscent, totalDescent,
+      };
       cachedClimbsKey = '';
       inspectedClimbIndex = null;
       lastActiveClimb = null;
@@ -3178,12 +3230,1366 @@ svg.tr-cp-svg-zoomed line {
     });
   }
 
+  /* ---------- 3D Climb Start & Finish Gantry Arches (WebGPU Main Pass) ---------- */
+  const ARCH_WGSL = /* wgsl */ `
+struct ArchUniforms {
+  viewProj: mat4x4f,
+  originOff: vec4f, // x = anchorX - ox, y = 0, z = anchorZ - oz, w = isSrgbTarget
+  sunDir: vec4f,    // xyz = unit sun direction, w = ambientBoost
+  camPos: vec4f,    // xyz = camPos (origin-relative), w = unused
+};
+@group(0) @binding(0) var<uniform> u: ArchUniforms;
+@group(0) @binding(1) var archSamp: sampler;
+@group(0) @binding(2) var archTex: texture_2d<f32>;
+
+struct VsIn {
+  @location(0) pos: vec3f,
+  @location(1) norm: vec3f,
+  @location(2) uv: vec2f,
+  @location(3) col: vec4f, // rgb = sRGB color, a = 1.0 for banner texture, 0.0 for solid frame/paint
+};
+struct VsOut {
+  @builtin(position) clipPos: vec4f,
+  @location(0) worldPos: vec3f,
+  @location(1) norm: vec3f,
+  @location(2) uv: vec2f,
+  @location(3) col: vec4f,
+};
+
+fn srgbToLin(c: vec3f) -> vec3f {
+  let lo = c / 12.92;
+  let hi = pow(max((c + 0.055) / 1.055, vec3f(0.0)), vec3f(2.4));
+  return select(hi, lo, c <= vec3f(0.04045));
+}
+fn linToSrgb(c: vec3f) -> vec3f {
+  let clamped = max(c, vec3f(0.0));
+  let lo = clamped * 12.92;
+  let hi = 1.055 * pow(clamped, vec3f(1.0 / 2.4)) - 0.055;
+  return clamp(select(hi, lo, clamped <= vec3f(0.0031308)), vec3f(0.0), vec3f(1.0));
+}
+
+@vertex
+fn vs(v: VsIn) -> VsOut {
+  var o: VsOut;
+  let relPos = vec3f(v.pos.x + u.originOff.x, v.pos.y, v.pos.z + u.originOff.z);
+  o.clipPos = u.viewProj * vec4f(relPos, 1.0);
+  o.worldPos = relPos;
+  o.norm = v.norm;
+  o.uv = v.uv;
+  o.col = v.col;
+  return o;
+}
+
+@fragment
+fn fs(in: VsOut) -> @location(0) vec4f {
+  // Always sample texture in uniform control flow (WGSL requirement)
+  let texSrgb = textureSample(archTex, archSamp, in.uv).rgb;
+  let N = normalize(in.norm);
+  let L = normalize(u.sunDir.xyz);
+  let V = normalize(u.camPos.xyz - in.worldPos);
+  let H = normalize(L + V);
+  let ndl = max(dot(N, L), 0.0);
+  let hemi = mix(0.34, 0.68, N.y * 0.5 + 0.5);
+
+  // Solid metallic truss / accent caps / road stripes
+  let baseLin = srgbToLin(in.col.rgb);
+  let spec = pow(max(dot(N, H), 0.0), 22.0) * 0.14 * select(1.0, 0.0, abs(N.y) > 0.92);
+  let frameLit = baseLin * (hemi + 0.58 * ndl) + vec3f(spec);
+
+  // Backlit pro-cycling overhead banner face (crisp & readable from both sides and in shadow/night)
+  let texLin = srgbToLin(texSrgb);
+  let bannerLit = texLin * (0.68 + 0.34 * ndl + 0.08 * max(N.y, 0.0));
+
+  let lit = mix(frameLit, bannerLit, step(0.5, in.col.a));
+  let outCol = select(linToSrgb(lit), lit, u.originOff.w > 0.5);
+  return vec4f(outCol, 1.0);
+}
+`;
+
+  const ARCH_SHADOW_MAX_VERTS = 4096;
+  const ARCH_SHADOW_MAX_INDICES = 6144;
+  const ARCH_SHADOW_RADIUS_M = 240;
+
+  const arch3d = {
+    eng: null,
+    origRender: null,
+    unhookFeature: null,
+    featScope: null,
+    gpu: null,
+    origCreateTex: null,
+    origUncaptured: undefined,
+    disabled: false,
+    loggedActive: false,
+    depthFormat: null,
+    sampleCount: 0,
+    reverseZ: null,
+    colorFormat: null,
+    bgl: null,
+    shaderMod: null,
+    sampler: null,
+    pipe: null,
+    pipeKey: '',
+    ubuf: null,
+    uData: new Float32Array(28),
+    vbuf: null,
+    ibuf: null,
+    atlasTex: null,
+    bindGroup: null,
+    indexCount: 0,
+    anchorX: 0,
+    anchorZ: 0,
+    shadowParts: [],
+    sourceRoute: null,
+    sourceClimbs: [],
+    sourceKey: '',
+    builtKey: '',
+  };
+
+  // Native Biketerra `pools.misc` shadow-casting proxy for nearby 3D climb gantries
+  // (`castsShadow: true, shadowOnly: true` pushed into renderQueue.draws).
+  const archShadow = {
+    disabled: false,
+    misc: null,
+    handle: null,
+    dataMap: null,
+    posOut: null,
+    normOut: null,
+    idxOut: new Uint32Array(ARCH_SHADOW_MAX_INDICES),
+    bounds: [0, 0, 0, 0, 0, 0],
+    draw: null,
+    activeKey: '',
+    hasGeo: false,
+    uploading: false,
+    loggedActive: false,
+  };
+
+  function archSlabsHas(slabs, slab) {
+    if (!slabs || !slab) return false;
+    if (typeof slabs.has === 'function') return slabs.has(slab);
+    if (Array.isArray(slabs)) return slabs.indexOf(slab) !== -1;
+    return false;
+  }
+
+  function ensureArchShadowAllocated(scope, eng) {
+    if (archShadow.disabled || archShadow.handle) return !!archShadow.handle;
+    const misc = eng && eng.pools && eng.pools.misc;
+    if (!misc || !misc.slabs || !misc.format || !Array.isArray(misc.format.buffers) ||
+        typeof misc.allocate !== 'function' || typeof misc.upload !== 'function') {
+      return false;
+    }
+    let handle;
+    try {
+      handle = misc.allocate(scope, ARCH_SHADOW_MAX_VERTS, ARCH_SHADOW_MAX_INDICES);
+    } catch (e) {
+      terra.log('terra-climb pools.misc allocate for arch shadow failed:', e);
+      archShadow.disabled = true;
+      return false;
+    }
+    if (!handle) return false;
+
+    const dataMap = {};
+    let posOut = null;
+    let normOut = null;
+    for (const buf of misc.format.buffers) {
+      for (const attr of (buf.attributes || [])) {
+        const comp = attr.components || 3;
+        const field = attr.field;
+        if (!field) continue;
+        const arr = new Float32Array(ARCH_SHADOW_MAX_VERTS * comp);
+        if (comp === 3 && !posOut) {
+          posOut = arr;
+        } else if (comp === 3 && !normOut) {
+          normOut = arr;
+        }
+        dataMap[field] = arr;
+      }
+    }
+    if (!posOut) {
+      archShadow.disabled = true;
+      return false;
+    }
+    archShadow.misc = misc;
+    archShadow.handle = handle;
+    archShadow.dataMap = dataMap;
+    archShadow.posOut = posOut;
+    archShadow.normOut = normOut;
+    return true;
+  }
+
+  function updateAndBuildArchShadowDraw(draws, camWorldX, camWorldZ) {
+    if (!archShadow.handle || !archShadow.misc || !arch3d.shadowParts.length) return null;
+
+    const r2 = ARCH_SHADOW_RADIUS_M * ARCH_SHADOW_RADIUS_M;
+    const nearParts = [];
+    let keyParts = arch3d.builtKey;
+    for (let i = 0; i < arch3d.shadowParts.length; i++) {
+      const part = arch3d.shadowParts[i];
+      const dx = part.cx - camWorldX;
+      const dz = part.cz - camWorldZ;
+      if (dx * dx + dz * dz <= r2) {
+        nearParts.push(part);
+        keyParts += '|' + i;
+      }
+    }
+    if (!nearParts.length) return null;
+
+    if (archShadow.activeKey !== keyParts && !archShadow.uploading) {
+      const po = archShadow.posOut;
+      const no = archShadow.normOut;
+      const io = archShadow.idxOut;
+      let vOff = 0;
+      let iOff = 0;
+      let minX = Infinity, minY = Infinity, minZ = Infinity;
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+
+      for (let p = 0; p < nearParts.length; p++) {
+        const part = nearParts[p];
+        const pv = part.verts;
+        const pi = part.indices;
+        const pVertCount = pv.length / 6;
+        if (vOff + pVertCount > ARCH_SHADOW_MAX_VERTS || iOff + pi.length > ARCH_SHADOW_MAX_INDICES) {
+          break;
+        }
+        for (let k = 0; k < pVertCount; k++) {
+          const s = k * 6;
+          const d3 = (vOff + k) * 3;
+          const wx = pv[s];
+          const wy = pv[s + 1];
+          const wz = pv[s + 2];
+          po[d3] = wx;
+          po[d3 + 1] = wy;
+          po[d3 + 2] = wz;
+          if (wx < minX) minX = wx; if (wx > maxX) maxX = wx;
+          if (wy < minY) minY = wy; if (wy > maxY) maxY = wy;
+          if (wz < minZ) minZ = wz; if (wz > maxZ) maxZ = wz;
+          if (no) {
+            no[d3] = pv[s + 3];
+            no[d3 + 1] = pv[s + 4];
+            no[d3 + 2] = pv[s + 5];
+          }
+        }
+        for (let k = 0; k < pi.length; k++) {
+          io[iOff + k] = pi[k] + vOff;
+        }
+        vOff += pVertCount;
+        iOff += pi.length;
+      }
+
+      if (vOff === 0 || iOff === 0) {
+        archShadow.hasGeo = false;
+        archShadow.activeKey = keyParts;
+        return null;
+      }
+
+      // Collapse unused tail vertices/indices to a degenerate point inside bounds
+      for (let k = vOff; k < ARCH_SHADOW_MAX_VERTS; k++) {
+        const d3 = k * 3;
+        po[d3] = minX; po[d3 + 1] = minY; po[d3 + 2] = minZ;
+      }
+      for (let k = iOff; k < ARCH_SHADOW_MAX_INDICES; k++) {
+        io[k] = 0;
+      }
+
+      archShadow.bounds[0] = minX; archShadow.bounds[1] = minY; archShadow.bounds[2] = minZ;
+      archShadow.bounds[3] = maxX; archShadow.bounds[4] = maxY; archShadow.bounds[5] = maxZ;
+      archShadow.hasGeo = true;
+      archShadow.uploading = true;
+      try {
+        const payload = { ...archShadow.dataMap, indices: io };
+        const res = archShadow.misc.upload(archShadow.handle, payload, { ox: 0, oz: 0 });
+        if (res && typeof res.then === 'function') {
+          res.then(
+            () => { archShadow.uploading = false; archShadow.activeKey = keyParts; },
+            () => { archShadow.uploading = false; }
+          );
+        } else {
+          archShadow.uploading = false;
+          archShadow.activeKey = keyParts;
+        }
+      } catch {
+        archShadow.uploading = false;
+      }
+    }
+
+    if (!archShadow.hasGeo) return null;
+
+    const slabs = archShadow.misc.slabs;
+    let ref = null;
+    let fallbackNonInst = null;
+    let fallbackAny = null;
+    for (let i = 0; i < draws.length; i++) {
+      const d = draws[i];
+      if (!d || !d.geometry || !archSlabsHas(slabs, d.geometry.slab) || !d.pipeline || !d.groups) continue;
+      if (!fallbackAny) fallbackAny = d;
+      if (d.instances == null) {
+        if (!fallbackNonInst) fallbackNonInst = d;
+        if (d.castsShadow !== false) {
+          ref = d;
+          break;
+        }
+      }
+    }
+    ref = ref || fallbackNonInst || fallbackAny;
+    if (!ref) return null;
+
+    if (!archShadow.draw) {
+      archShadow.draw = {
+        pipeline: ref.pipeline,
+        index: ref.index,
+        geometry: archShadow.handle,
+        instances: null,
+        groups: ref.groups,
+        shadowGroups: ref.shadowGroups ?? null,
+        bounds: archShadow.bounds,
+        shadowIndex: ref.shadowIndex ?? 0,
+        castsShadow: true,
+        shadowOnly: true,
+      };
+    } else {
+      archShadow.draw.pipeline = ref.pipeline;
+      archShadow.draw.index = ref.index;
+      archShadow.draw.geometry = archShadow.handle;
+      archShadow.draw.groups = ref.groups;
+      archShadow.draw.shadowGroups = ref.shadowGroups ?? null;
+      archShadow.draw.bounds = archShadow.bounds;
+      archShadow.draw.shadowIndex = ref.shadowIndex ?? 0;
+      archShadow.draw.castsShadow = true;
+      archShadow.draw.shadowOnly = true;
+    }
+    return archShadow.draw;
+  }
+
+  function hexToRgb01(hex) {
+    if (typeof hex !== 'string') return [0.95, 0.45, 0.2];
+    const h = hex.replace('#', '').trim();
+    if (h.length === 3) {
+      return [
+        parseInt(h[0] + h[0], 16) / 255,
+        parseInt(h[1] + h[1], 16) / 255,
+        parseInt(h[2] + h[2], 16) / 255,
+      ];
+    }
+    if (h.length >= 6) {
+      return [
+        parseInt(h.slice(0, 2), 16) / 255,
+        parseInt(h.slice(2, 4), 16) / 255,
+        parseInt(h.slice(4, 6), 16) / 255,
+      ];
+    }
+    return [0.95, 0.45, 0.2];
+  }
+
+  function sampleRoutePos3d(route, targetDist) {
+    const srcPts = (route.hasExplicitCenter && route.centerPts) ? route.centerPts : route.pts;
+    const { widths, dist, totalLen, n } = route;
+    const d = clamp(targetDist, 0, totalLen);
+    let lo = 0, hi = n - 1;
+    while (lo + 1 < hi) {
+      const mid = (lo + hi) >> 1;
+      if (dist[mid] <= d) lo = mid;
+      else hi = mid;
+    }
+    const segLen = dist[hi] - dist[lo];
+    const t = segLen > 1e-6 ? clamp((d - dist[lo]) / segLen, 0, 1) : 0;
+    const w0 = widths ? widths[lo] : 6.0;
+    const w1 = widths ? widths[hi] : 6.0;
+    return {
+      x: srcPts[lo].x + (srcPts[hi].x - srcPts[lo].x) * t,
+      y: srcPts[lo].y + (srcPts[hi].y - srcPts[lo].y) * t,
+      z: srcPts[lo].z + (srcPts[hi].z - srcPts[lo].z) * t,
+      roadW: w0 + (w1 - w0) * t,
+    };
+  }
+
+  function sampleRoadPose(route, targetDist) {
+    const c = sampleRoutePos3d(route, targetDist);
+    // Tight ±2.5m tangent window keeps arches & painted lines perpendicular even on tight curves
+    const pBack = sampleRoutePos3d(route, Math.max(0, targetDist - 2.5));
+    const pFwd = sampleRoutePos3d(route, Math.min(route.totalLen, targetDist + 2.5));
+    let fx = pFwd.x - pBack.x;
+    let fz = pFwd.z - pBack.z;
+    const fl = Math.hypot(fx, fz);
+    if (fl > 1e-4) { fx /= fl; fz /= fl; }
+    else { fx = 0; fz = -1; }
+    // Right-handed Y-up: F x (0, 1, 0) = (-fz, 0, fx) -> +R is road-right, -R is road-left
+    const rx = -fz;
+    const rz = fx;
+    const shift = Number.isFinite(route.laneCenterShift) ? route.laneCenterShift : -1.75;
+    const halfSpan = clamp(c.roadW * 0.5 + 0.65, 3.65, 6.8);
+    const pLineBack = sampleRoutePos3d(route, Math.max(0, targetDist - 0.55));
+    const pLineFwd = sampleRoutePos3d(route, Math.min(route.totalLen, targetDist + 0.55));
+    return {
+      x: c.x + rx * shift,
+      y: c.y,
+      z: c.z + rz * shift,
+      fx, fz, rx, rz,
+      halfSpan,
+      roadHalfW: clamp(c.roadW * 0.46, 2.65, 5.4),
+      yBack: pLineBack.y,
+      yFwd: pLineFwd.y,
+    };
+  }
+
+  function drawRoundedRectPath(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, w * 0.5, h * 0.5);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.lineTo(x + w - rr, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
+    ctx.lineTo(x + w, y + h - rr);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+    ctx.lineTo(x + rr, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+    ctx.lineTo(x, y + rr);
+    ctx.quadraticCurveTo(x, y, x + rr, y);
+    ctx.closePath();
+  }
+
+  function drawFittedBannerText(ctx, text, x, y, maxW, weight, maxPx, minPx) {
+    let px = maxPx;
+    ctx.font = `${weight} ${px}px system-ui, -apple-system, Segoe UI, sans-serif`;
+    const measured = ctx.measureText(text).width;
+    if (measured > maxW && measured > 0) {
+      px = Math.max(minPx, Math.floor(px * (maxW / measured)));
+      ctx.font = `${weight} ${px}px system-ui, -apple-system, Segoe UI, sans-serif`;
+    }
+    ctx.fillText(text, x, y, maxW);
+  }
+
+  function drawStartBannerCell(ctx, ox, oy, cellW, cellH, climb) {
+    ctx.save();
+    ctx.translate(ox, oy);
+    ctx.beginPath();
+    ctx.rect(0, 0, cellW, cellH);
+    ctx.clip();
+
+    // Deep carbon background with subtle vertical sheen
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, cellH);
+    bgGrad.addColorStop(0, '#101827');
+    bgGrad.addColorStop(0.5, '#0b1220');
+    bgGrad.addColorStop(1, '#141e30');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, cellW, cellH);
+
+    // Subtle category-colored top & bottom accent bars
+    const accent = (climb.cat && climb.cat.bg) || '#f97316';
+    const badgeFg = (climb.cat && climb.cat.fg) || '#ffffff';
+    ctx.fillStyle = accent;
+    ctx.fillRect(0, 0, cellW, 11);
+    ctx.fillRect(0, cellH - 11, cellW, 11);
+
+    // Subtle diagonal racing stripes on far left
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    for (let sx = -40; sx < 240; sx += 34) {
+      ctx.beginPath();
+      ctx.moveTo(sx, cellH);
+      ctx.lineTo(sx + 16, cellH);
+      ctx.lineTo(sx + 52, 0);
+      ctx.lineTo(sx + 36, 0);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Category pill badge on left
+    drawRoundedRectPath(ctx, 22, 26, 178, cellH - 52, 16);
+    ctx.fillStyle = accent;
+    ctx.fill();
+
+    // Small mountain icon inside badge top
+    ctx.fillStyle = badgeFg;
+    ctx.globalAlpha = 0.9;
+    ctx.beginPath();
+    ctx.moveTo(92, 60);
+    ctx.lineTo(111, 35);
+    ctx.lineTo(130, 60);
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = badgeFg;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    drawFittedBannerText(ctx, (climb.cat && climb.cat.label) || 'CLIMB', 111, 100, 158, 900, 40, 26);
+
+    // Mini color-coded elevation/grade profile chart on the right (reserved clear gutter for text)
+    const px = 706, py = 26, pw = 294, ph = cellH - 52;
+    const textX = 220;
+    const textMaxW = px - textX - 20;
+
+    // Main title + live stats (auto-fitted so long numbers never touch the elevation graph)
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#ffffff';
+    const title = climb.totalClimbs > 1
+      ? `CLIMB ${climb.index}/${climb.totalClimbs} START`
+      : 'CLIMB START';
+    drawFittedBannerText(ctx, title, textX, 58, textMaxW, 900, 46, 30);
+
+    const lenStr = fmtDist(climb.lengthM);
+    const grdStr = `${climb.avgGrade.toFixed(1)}% AVG`;
+    const gainStr = `+${fmtElev(climb.ascentM)}`;
+    ctx.fillStyle = '#cbd5e1';
+    drawFittedBannerText(ctx, `${lenStr} · ${grdStr} · ${gainStr}`, textX, 112, textMaxW, 700, 31, 21);
+
+    drawRoundedRectPath(ctx, px, py, pw, ph, 12);
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    const segs = Array.isArray(climb.segments) && climb.segments.length ? climb.segments : null;
+    if (segs && climb.lengthM > 0) {
+      const innerX = px + 14;
+      const innerY = py + 14;
+      const innerW = pw - 28;
+      const innerH = ph - 24;
+      const elevPts = [0];
+      let acc = 0;
+      let minE = 0, maxE = 0;
+      for (let i = 0; i < segs.length; i++) {
+        acc += (segs[i].grade / 100) * segs[i].lenM;
+        elevPts.push(acc);
+        if (acc < minE) minE = acc;
+        if (acc > maxE) maxE = acc;
+      }
+      const spanE = Math.max(1, maxE - minE);
+      const baseBottom = innerY + innerH;
+
+      let cumD = 0;
+      for (let i = 0; i < segs.length; i++) {
+        const x0 = innerX + (cumD / climb.lengthM) * innerW;
+        cumD += segs[i].lenM;
+        const x1 = innerX + Math.min(1, cumD / climb.lengthM) * innerW;
+        const y0 = baseBottom - ((elevPts[i] - minE) / spanE) * (innerH * 0.86) - innerH * 0.08;
+        const y1 = baseBottom - ((elevPts[i + 1] - minE) / spanE) * (innerH * 0.86) - innerH * 0.08;
+        ctx.beginPath();
+        ctx.moveTo(x0, baseBottom);
+        ctx.lineTo(x0, y0);
+        ctx.lineTo(x1, y1);
+        ctx.lineTo(x1, baseBottom);
+        ctx.closePath();
+        ctx.fillStyle = segs[i].color || gradeColor(segs[i].grade);
+        ctx.fill();
+      }
+      // Crisp white top profile outline
+      ctx.beginPath();
+      cumD = 0;
+      for (let i = 0; i <= segs.length; i++) {
+        const x = innerX + (cumD / climb.lengthM) * innerW;
+        const y = baseBottom - ((elevPts[i] - minE) / spanE) * (innerH * 0.86) - innerH * 0.08;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+        if (i < segs.length) cumD += segs[i].lenM;
+      }
+      ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }
+
+  function drawSummitBannerCell(ctx, ox, oy, cellW, cellH, climb) {
+    ctx.save();
+    ctx.translate(ox, oy);
+    ctx.beginPath();
+    ctx.rect(0, 0, cellW, cellH);
+    ctx.clip();
+
+    // Rich dark summit slate
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, cellH);
+    bgGrad.addColorStop(0, '#131b2c');
+    bgGrad.addColorStop(0.5, '#0b101b');
+    bgGrad.addColorStop(1, '#151e31');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, cellW, cellH);
+
+    // Classic black & white checkered race finish borders (left & right)
+    const sq = 20;
+    const cols = 3;
+    for (let r = 0; r * sq < cellH; r++) {
+      for (let c = 0; c < cols; c++) {
+        const isW = ((r + c) & 1) === 0;
+        ctx.fillStyle = isW ? '#f8fafc' : '#0f172a';
+        ctx.fillRect(c * sq, r * sq, sq, sq);
+        ctx.fillRect(cellW - (cols - c) * sq, r * sq, sq, sq);
+      }
+    }
+
+    // Subtle KOM polka-dot motif on inner side wings
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.22)';
+    const dotXs = [92, 138, 184, cellW - 92, cellW - 138, cellW - 184];
+    for (let i = 0; i < dotXs.length; i++) {
+      ctx.beginPath();
+      ctx.arc(dotXs[i], 38 + (i % 2) * 28, 11, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(dotXs[i], cellH - 38 - (i % 2) * 24, 11, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Crisp crimson/gold top & bottom KOM trim rails
+    const accent = (climb.cat && climb.cat.bg) || '#ef4444';
+    ctx.fillStyle = '#ef4444';
+    ctx.fillRect(cols * sq, 0, cellW - cols * sq * 2, 11);
+    ctx.fillRect(cols * sq, cellH - 11, cellW - cols * sq * 2, 11);
+
+    // Left KOM badge (white pill with red polka dots & bold KOM text)
+    drawRoundedRectPath(ctx, 84, 28, 148, cellH - 56, 16);
+    ctx.fillStyle = '#f8fafc';
+    ctx.fill();
+    ctx.save();
+    drawRoundedRectPath(ctx, 84, 28, 148, cellH - 56, 16);
+    ctx.clip();
+    ctx.fillStyle = '#ef4444';
+    const pd = [[98, 42], [142, 36], [192, 46], [220, 38], [102, 118], [154, 124], [208, 116]];
+    for (const [dx, dy] of pd) {
+      ctx.beginPath();
+      ctx.arc(dx, dy, 10, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+    ctx.fillStyle = '#0f172a';
+    ctx.font = '900 42px system-ui, -apple-system, Segoe UI, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('KOM', 158, cellH * 0.5 + 2);
+
+    // Center headline (fitted cleanly between left KOM badge and right CAT badge)
+    const centerMaxW = 520;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#ffffff';
+    const title = climb.totalClimbs > 1
+      ? `CLIMB ${climb.index} SUMMIT`
+      : 'SUMMIT FINISH';
+    drawFittedBannerText(ctx, title, cellW * 0.5, 56, centerMaxW, 900, 46, 30);
+
+    const elevStr = `ELEV ${fmtElev(Math.round(climb.endElev))}`;
+    const gainStr = `+${fmtElev(climb.ascentM)} GAIN`;
+    ctx.fillStyle = '#e2e8f0';
+    drawFittedBannerText(ctx, `${elevStr} · ${gainStr}`, cellW * 0.5, 112, centerMaxW, 700, 29, 20);
+
+    // Right category badge
+    drawRoundedRectPath(ctx, cellW - 232, 28, 148, cellH - 56, 16);
+    ctx.fillStyle = accent;
+    ctx.fill();
+    ctx.fillStyle = (climb.cat && climb.cat.fg) || '#ffffff';
+    ctx.textAlign = 'center';
+    drawFittedBannerText(ctx, (climb.cat && climb.cat.label) || 'TOP', cellW - 158, cellH * 0.5 + 2, 134, 900, 36, 24);
+
+    ctx.restore();
+  }
+
+  function createBannerAtlasCanvas(climbs) {
+    const cellW = 1024;
+    const cellH = 160;
+    const rows = Math.max(1, climbs.length);
+    const canvas = document.createElement('canvas');
+    canvas.width = cellW * 2; // col 0 = Start, col 1 = Summit
+    canvas.height = rows * cellH;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    for (let i = 0; i < climbs.length; i++) {
+      drawStartBannerCell(ctx, 0, i * cellH, cellW, cellH, climbs[i]);
+      drawSummitBannerCell(ctx, cellW, i * cellH, cellW, cellH, climbs[i]);
+    }
+    return { canvas, rows, cellW, cellH };
+  }
+
+  function buildArchesGeometry(route, climbs, maxClimbs) {
+    const usedClimbs = climbs.slice(0, maxClimbs);
+    if (!usedClimbs.length || !route || !route.pts || !route.pts.length) {
+      return null;
+    }
+    const anchorX = route.pts[0].x;
+    const anchorZ = route.pts[0].z;
+    const verts = [];
+    const indices = [];
+    const shadowParts = [];
+
+    const pushV = (x, y, z, nx, ny, nz, u, v, r, g, b, mode) => {
+      const idx = verts.length / 12;
+      verts.push(x, y, z, nx, ny, nz, u, v, r, g, b, mode);
+      return idx;
+    };
+
+    const pushQuad = (p0, p1, p2, p3, nx, ny, nz, uv0, uv1, uv2, uv3, col, mode) => {
+      const i0 = pushV(p0[0], p0[1], p0[2], nx, ny, nz, uv0[0], uv0[1], col[0], col[1], col[2], mode);
+      const i1 = pushV(p1[0], p1[1], p1[2], nx, ny, nz, uv1[0], uv1[1], col[0], col[1], col[2], mode);
+      const i2 = pushV(p2[0], p2[1], p2[2], nx, ny, nz, uv2[0], uv2[1], col[0], col[1], col[2], mode);
+      const i3 = pushV(p3[0], p3[1], p3[2], nx, ny, nz, uv3[0], uv3[1], col[0], col[1], col[2], mode);
+      indices.push(i0, i1, i2, i0, i2, i3);
+    };
+
+    // Outward-CCW shadow quad pushed in full world space into per-arch shadow mesh
+    const pushShadowQuad = (sv, si, p0, p1, p2, p3, nx, ny, nz) => {
+      const base = sv.length / 6;
+      sv.push(
+        p0[0] + anchorX, p0[1], p0[2] + anchorZ, nx, ny, nz,
+        p1[0] + anchorX, p1[1], p1[2] + anchorZ, nx, ny, nz,
+        p2[0] + anchorX, p2[1], p2[2] + anchorZ, nx, ny, nz,
+        p3[0] + anchorX, p3[1], p3[2] + anchorZ, nx, ny, nz
+      );
+      si.push(base, base + 3, base + 2, base, base + 2, base + 1);
+    };
+
+    // Axis-aligned box in gantry local space (r = road-right, y = vertical up, f = road-forward)
+    const pushLocalBox = (pose, r0, r1, y0, y1, f0, f1, col, sv, si) => {
+      const bx = pose.x - anchorX;
+      const by = pose.y;
+      const bz = pose.z - anchorZ;
+      const toW = (r, y, f) => [
+        bx + pose.rx * r + pose.fx * f,
+        by + y,
+        bz + pose.rz * r + pose.fz * f,
+      ];
+      const u0 = [0, 0];
+      const faces = [
+        [toW(r0, y1, f0), toW(r1, y1, f0), toW(r1, y0, f0), toW(r0, y0, f0), -pose.fx, 0, -pose.fz], // Front (-F)
+        [toW(r1, y1, f1), toW(r0, y1, f1), toW(r0, y0, f1), toW(r1, y0, f1),  pose.fx, 0,  pose.fz], // Back (+F)
+        [toW(r0, y1, f1), toW(r0, y1, f0), toW(r0, y0, f0), toW(r0, y0, f1), -pose.rx, 0, -pose.rz], // Left (-R)
+        [toW(r1, y1, f0), toW(r1, y1, f1), toW(r1, y0, f1), toW(r1, y0, f0),  pose.rx, 0,  pose.rz], // Right (+R)
+        [toW(r0, y1, f1), toW(r1, y1, f1), toW(r1, y1, f0), toW(r0, y1, f0),  0, 1, 0],             // Top (+Y)
+        [toW(r0, y0, f0), toW(r1, y0, f0), toW(r1, y0, f1), toW(r0, y0, f1),  0, -1, 0],            // Bottom (-Y)
+      ];
+      for (let i = 0; i < faces.length; i++) {
+        const f = faces[i];
+        pushQuad(f[0], f[1], f[2], f[3], f[4], f[5], f[6], u0, u0, u0, u0, col, 0);
+        if (sv && si) pushShadowQuad(sv, si, f[0], f[1], f[2], f[3], f[4], f[5], f[6]);
+      }
+    };
+
+    const addGantryAt = (pose, accentCol, uMin, uMax, vMin, vMax, isSummit) => {
+      const darkSteel = [0.13, 0.16, 0.21];
+      const lightSteel = [0.24, 0.28, 0.35];
+      const whitePaint = [0.95, 0.96, 0.98];
+      const blackPaint = [0.07, 0.08, 0.10];
+
+      const hs = pose.halfSpan;       // pillar center distance from road centerline (~3.65m on 6m road)
+      const pw = 0.19;                // pillar half-width (0.38m wide)
+      const pd = 0.21;                // pillar half-depth (0.42m deep)
+      const clearH = 4.15;            // overhead clearance below sign
+      const boardH = clamp((hs - pw) * 0.36, 1.18, 1.45); // keeps crisp ~5.6:1 banner aspect ratio
+      const topH = clearH + boardH;
+
+      const sv = [];
+      const si = [];
+
+      // Left & right vertical steel gantry towers (planted -1.5m into ground so they never float on slopes)
+      pushLocalBox(pose, -hs - pw, -hs + pw, -1.5, topH + 0.22, -pd, pd, darkSteel, sv, si);
+      pushLocalBox(pose,  hs - pw,  hs + pw, -1.5, topH + 0.22, -pd, pd, darkSteel, sv, si);
+
+      // Subtle base collars near ground + colored beacon caps on top of both towers
+      pushLocalBox(pose, -hs - pw - 0.08, -hs + pw + 0.08, -0.35, 0.55, -pd - 0.08, pd + 0.08, lightSteel, sv, si);
+      pushLocalBox(pose,  hs - pw - 0.08,  hs + pw + 0.08, -0.35, 0.55, -pd - 0.08, pd + 0.08, lightSteel, sv, si);
+      pushLocalBox(pose, -hs - pw - 0.05, -hs + pw + 0.05, topH + 0.22, topH + 0.44, -pd - 0.05, pd + 0.05, accentCol, sv, si);
+      pushLocalBox(pose,  hs - pw - 0.05,  hs + pw + 0.05, topH + 0.22, topH + 0.44, -pd - 0.05, pd + 0.05, accentCol, sv, si);
+
+      // Category-colored vertical accent stripes on both pillars (flush on pillars; omit from shadow proxy)
+      pushLocalBox(pose, -hs - pw - 0.015, -hs + pw + 0.015, 1.0, 3.6, -pd - 0.015, -pd + 0.04, accentCol, null, null);
+      pushLocalBox(pose,  hs - pw - 0.015,  hs + pw + 0.015, 1.0, 3.6, -pd - 0.015, -pd + 0.04, accentCol, null, null);
+
+      // Top & bottom horizontal overhead truss beams
+      pushLocalBox(pose, -hs, hs, topH, topH + 0.16, -0.18, 0.18, lightSteel, sv, si);
+      pushLocalBox(pose, -hs, hs, clearH - 0.14, clearH, -0.16, 0.16, lightSteel, sv, si);
+
+      // Corner knee braces connecting pillars to overhead beam
+      pushLocalBox(pose, -hs + pw, -hs + pw + 0.55, clearH - 0.65, clearH - 0.14, -0.12, 0.12, darkSteel, sv, si);
+      pushLocalBox(pose,  hs - pw - 0.55,  hs - pw, clearH - 0.65, clearH - 0.14, -0.12, 0.12, darkSteel, sv, si);
+
+      // Overhead 3D sign box casing (slightly inset from pillars so sign fits cleanly between them)
+      const boardHalfW = hs - pw - 0.06;
+      const bd = 0.14;
+      pushLocalBox(pose, -boardHalfW, boardHalfW, clearH, topH, -bd, bd, darkSteel, sv, si);
+
+      shadowParts.push({
+        cx: pose.x,
+        cy: pose.y + 3.0,
+        cz: pose.z,
+        verts: new Float32Array(sv),
+        indices: new Uint32Array(si),
+      });
+
+      // Textured Front & Back banner faces (100% left-to-right readable from both directions!)
+      const bx = pose.x - anchorX;
+      const by = pose.y;
+      const bz = pose.z - anchorZ;
+      const toW = (r, y, f) => [
+        bx + pose.rx * r + pose.fx * f,
+        by + y,
+        bz + pose.rz * r + pose.fz * f,
+      ];
+      const padF = bd + 0.012;
+      const white = [1, 1, 1];
+      // Front face (-F, facing approaching riders): -R is left (uMin), +R is right (uMax), top is vMin, bottom is vMax
+      pushQuad(
+        toW(-boardHalfW, topH,   -padF),
+        toW( boardHalfW, topH,   -padF),
+        toW( boardHalfW, clearH, -padF),
+        toW(-boardHalfW, clearH, -padF),
+        -pose.fx, 0, -pose.fz,
+        [uMin, vMin], [uMax, vMin], [uMax, vMax], [uMin, vMax],
+        white, 1.0
+      );
+      // Back face (+F, readable when looking back): +R is left (uMin), -R is right (uMax)
+      pushQuad(
+        toW( boardHalfW, topH,   padF),
+        toW(-boardHalfW, topH,   padF),
+        toW(-boardHalfW, clearH, padF),
+        toW( boardHalfW, clearH, padF),
+        pose.fx, 0, pose.fz,
+        [uMin, vMin], [uMax, vMin], [uMax, vMax], [uMin, vMax],
+        white, 1.0
+      );
+
+      // Flush painted road line directly underneath the gantry (conforms to climb slope; intentionally non-shadow-casting)
+      const rw = pose.roadHalfW;
+      const yLift = 0.045;
+      const roadPt = (r, fFrac) => {
+        const fDist = (fFrac - 0.5) * 1.10; // -0.55m .. +0.55m along road
+        const yRoad = pose.yBack + (pose.yFwd - pose.yBack) * fFrac;
+        return [
+          bx + pose.rx * r + pose.fx * fDist,
+          yRoad + yLift,
+          bz + pose.rz * r + pose.fz * fDist,
+        ];
+      };
+      const u0 = [0, 0];
+      if (isSummit) {
+        // 2-row Tour-style black & white checkered finish line across the asphalt
+        const squares = 14;
+        for (let row = 0; row < 2; row++) {
+          const fA = row * 0.5;
+          const fB = (row + 1) * 0.5;
+          for (let colIdx = 0; colIdx < squares; colIdx++) {
+            const rA = -rw + (colIdx / squares) * (rw * 2);
+            const rB = -rw + ((colIdx + 1) / squares) * (rw * 2);
+            const cPaint = ((row + colIdx) & 1) === 0 ? whitePaint : blackPaint;
+            pushQuad(
+              roadPt(rA, fB), roadPt(rB, fB), roadPt(rB, fA), roadPt(rA, fA),
+              0, 1, 0, u0, u0, u0, u0, cPaint, 0
+            );
+          }
+        }
+      } else {
+        // Crisp start line: white outer rails + category-colored center band
+        pushQuad(roadPt(-rw, 0.25), roadPt(rw, 0.25), roadPt(rw, 0.05), roadPt(-rw, 0.05), 0, 1, 0, u0, u0, u0, u0, whitePaint, 0);
+        pushQuad(roadPt(-rw, 0.75), roadPt(rw, 0.75), roadPt(rw, 0.25), roadPt(-rw, 0.25), 0, 1, 0, u0, u0, u0, u0, accentCol, 0);
+        pushQuad(roadPt(-rw, 0.95), roadPt(rw, 0.95), roadPt(rw, 0.75), roadPt(-rw, 0.75), 0, 1, 0, u0, u0, u0, u0, whitePaint, 0);
+      }
+    };
+
+    const rows = usedClimbs.length;
+    const invRows = 1 / rows;
+    // Small inset inside each atlas cell so linear/mip filtering never bleeds across neighbor signs
+    const uPad = 1.5 / 2048;
+    const vPad = 1.5 / (rows * 160);
+
+    for (let i = 0; i < rows; i++) {
+      const climb = usedClimbs[i];
+      const vMin = i * invRows + vPad;
+      const vMax = (i + 1) * invRows - vPad;
+      const catRgb = hexToRgb01((climb.cat && climb.cat.bg) || '#f97316');
+
+      const startPose = sampleRoadPose(route, climb.startDist);
+      addGantryAt(startPose, catRgb, 0.0 + uPad, 0.5 - uPad, vMin, vMax, false);
+
+      const summitPose = sampleRoadPose(route, climb.endDist);
+      addGantryAt(summitPose, [0.94, 0.27, 0.27], 0.5 + uPad, 1.0 - uPad, vMin, vMax, true);
+    }
+
+    return {
+      anchorX,
+      anchorZ,
+      vertData: new Float32Array(verts),
+      idxData: new Uint32Array(indices),
+      indexCount: indices.length,
+      shadowParts,
+      usedClimbs,
+    };
+  }
+
+  function mapValidationDepthFormat(token) {
+    const t = String(token || '').toLowerCase();
+    if (t.includes('depth32floatstencil8')) return 'depth32float-stencil8';
+    if (t.includes('depth24plusstencil8')) return 'depth24plus-stencil8';
+    if (t.includes('depth32float')) return 'depth32float';
+    if (t.includes('depth24plus')) return 'depth24plus';
+    if (t.includes('depth16unorm')) return 'depth16unorm';
+    return null;
+  }
+
+  function probeArchDepthFormat(eng) {
+    if (!eng || arch3d.depthFormat) return;
+    const seen = new Set();
+    const queue = [{ obj: eng, depth: 0 }];
+    while (queue.length > 0 && seen.size < 240) {
+      const { obj, depth } = queue.shift();
+      if (!obj || typeof obj !== 'object' || seen.has(obj)) continue;
+      seen.add(obj);
+      if (typeof obj.format === 'string' && typeof obj.width === 'number' && typeof obj.height === 'number') {
+        if (obj.format.startsWith('depth')) {
+          arch3d.depthFormat = obj.format;
+          if (typeof obj.sampleCount === 'number' && obj.sampleCount >= 1) {
+            arch3d.sampleCount = obj.sampleCount;
+          }
+          return;
+        }
+      }
+      if (depth >= 3) continue;
+      let keys;
+      try { keys = Object.keys(obj); } catch { continue; }
+      for (let i = 0; i < keys.length; i++) {
+        const k = keys[i];
+        if (k === 'window' || k === 'document' || k === 'parent' || k === 'canvas') continue;
+        let val;
+        try { val = obj[k]; } catch { continue; }
+        if (val && typeof val === 'object' && !Array.isArray(val) && !ArrayBuffer.isView(val)) {
+          queue.push({ obj: val, depth: depth + 1 });
+        }
+      }
+    }
+  }
+
+  function restoreArchGpuHooks() {
+    if (arch3d.gpu) {
+      if (arch3d.origCreateTex) {
+        try { arch3d.gpu.createTexture = arch3d.origCreateTex; } catch {}
+      }
+      if (arch3d.origUncaptured !== undefined) {
+        try { arch3d.gpu.onuncapturederror = arch3d.origUncaptured; } catch {}
+      }
+    }
+    arch3d.origCreateTex = null;
+    arch3d.origUncaptured = undefined;
+  }
+
+  function installArchGpuHooks(gpu) {
+    if (!gpu || arch3d.gpu === gpu) return;
+    restoreArchGpuHooks();
+    arch3d.gpu = gpu;
+
+    if (typeof gpu.createTexture === 'function') {
+      const origCreate = gpu.createTexture.bind(gpu);
+      arch3d.origCreateTex = gpu.createTexture;
+      gpu.createTexture = function (desc) {
+        try {
+          if (desc && typeof desc.format === 'string' && desc.format.startsWith('depth')) {
+            arch3d.depthFormat = desc.format;
+            if (typeof desc.sampleCount === 'number' && desc.sampleCount >= 1) {
+              arch3d.sampleCount = desc.sampleCount;
+            }
+          }
+        } catch {}
+        return origCreate(desc);
+      };
+    }
+
+    const prior = gpu.onuncapturederror;
+    arch3d.origUncaptured = prior;
+    gpu.onuncapturederror = (ev) => {
+      try {
+        const msg = String((ev && ev.error && ev.error.message) || (ev && ev.message) || '');
+        if (msg.includes('terra_climb_arch')) {
+          const fm = msg.match(/TextureFormat::(Depth[A-Za-z0-9]+)/i);
+          if (fm) {
+            const parsed = mapValidationDepthFormat(fm[1]);
+            if (parsed && parsed !== arch3d.depthFormat) {
+              arch3d.depthFormat = parsed;
+              arch3d.pipe = null;
+              arch3d.pipeKey = '';
+            }
+          }
+          const sm = msg.match(/sample\s*count\s*\((\d+)\)/i) || msg.match(/sampleCount\s*\((\d+)\)/i);
+          if (sm) {
+            const sc = Number(sm[1]);
+            if ((sc === 1 || sc === 4) && sc !== arch3d.sampleCount) {
+              arch3d.sampleCount = sc;
+              arch3d.pipe = null;
+              arch3d.pipeKey = '';
+            }
+          }
+        }
+      } catch {}
+      if (typeof prior === 'function') return prior(ev);
+    };
+  }
+
+  function destroyArchDynamicBuffers() {
+    if (arch3d.vbuf) { try { arch3d.vbuf.destroy(); } catch {} arch3d.vbuf = null; }
+    if (arch3d.ibuf) { try { arch3d.ibuf.destroy(); } catch {} arch3d.ibuf = null; }
+    if (arch3d.atlasTex) { try { arch3d.atlasTex.destroy(); } catch {} arch3d.atlasTex = null; }
+    arch3d.bindGroup = null;
+    arch3d.indexCount = 0;
+    arch3d.shadowParts = [];
+    archShadow.activeKey = '';
+    archShadow.hasGeo = false;
+  }
+
+  function uploadArchResources(gpu) {
+    if (!arch3d.sourceRoute || !arch3d.sourceClimbs.length) {
+      destroyArchDynamicBuffers();
+      arch3d.builtKey = arch3d.sourceKey;
+      return false;
+    }
+    const maxDim = (gpu.limits && gpu.limits.maxTextureDimension2D) ? gpu.limits.maxTextureDimension2D : 8192;
+    const maxClimbs = Math.max(1, Math.min(32, Math.floor(Math.min(8192, maxDim) / 160)));
+    const geo = buildArchesGeometry(arch3d.sourceRoute, arch3d.sourceClimbs, maxClimbs);
+    if (!geo || geo.indexCount === 0) {
+      destroyArchDynamicBuffers();
+      arch3d.builtKey = arch3d.sourceKey;
+      return false;
+    }
+    const atlas = createBannerAtlasCanvas(geo.usedClimbs);
+    if (!atlas) return false;
+
+    destroyArchDynamicBuffers();
+
+    arch3d.anchorX = geo.anchorX;
+    arch3d.anchorZ = geo.anchorZ;
+    arch3d.indexCount = geo.indexCount;
+    arch3d.shadowParts = geo.shadowParts || [];
+
+    arch3d.vbuf = gpu.createBuffer({
+      label: 'terra_climb_arch_vb',
+      size: Math.max(48, (geo.vertData.byteLength + 3) & ~3),
+      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    });
+    gpu.queue.writeBuffer(arch3d.vbuf, 0, geo.vertData);
+
+    arch3d.ibuf = gpu.createBuffer({
+      label: 'terra_climb_arch_ib',
+      size: Math.max(12, (geo.idxData.byteLength + 3) & ~3),
+      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+    });
+    gpu.queue.writeBuffer(arch3d.ibuf, 0, geo.idxData);
+
+    const w0 = atlas.canvas.width;
+    const h0 = atlas.canvas.height;
+    const mipLevels = (w0 >= 8 && h0 >= 8 && (w0 % 8 === 0) && (h0 % 8 === 0)) ? 4 : 1;
+    arch3d.atlasTex = gpu.createTexture({
+      label: 'terra_climb_arch_atlas',
+      size: [w0, h0, 1],
+      mipLevelCount: mipLevels,
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+
+    // Upload crisp Canvas2D mipmap chain so overhead sign lettering stays shimmer-free at every distance
+    let curCanvas = atlas.canvas;
+    for (let lvl = 0; lvl < mipLevels; lvl++) {
+      const mw = Math.max(1, w0 >> lvl);
+      const mh = Math.max(1, h0 >> lvl);
+      if (lvl > 0) {
+        const nextC = document.createElement('canvas');
+        nextC.width = mw;
+        nextC.height = mh;
+        const nctx = nextC.getContext('2d');
+        if (nctx) {
+          nctx.imageSmoothingEnabled = true;
+          nctx.imageSmoothingQuality = 'high';
+          nctx.drawImage(curCanvas, 0, 0, mw, mh);
+        }
+        curCanvas = nextC;
+      }
+      gpu.queue.copyExternalImageToTexture(
+        { source: curCanvas },
+        { texture: arch3d.atlasTex, mipLevel: lvl },
+        [mw, mh]
+      );
+    }
+
+    arch3d.bindGroup = gpu.createBindGroup({
+      label: 'terra_climb_arch_bg',
+      layout: arch3d.bgl,
+      entries: [
+        { binding: 0, resource: { buffer: arch3d.ubuf } },
+        { binding: 1, resource: arch3d.sampler },
+        { binding: 2, resource: arch3d.atlasTex.createView() },
+      ],
+    });
+
+    arch3d.builtKey = arch3d.sourceKey;
+    return true;
+  }
+
+  function ensureArchPipeline(gpu, colorFormat, depthFormat, sampleCount, reverseZ) {
+    if (typeof GPUShaderStage === 'undefined' || typeof GPUBufferUsage === 'undefined' || typeof GPUTextureUsage === 'undefined') {
+      arch3d.disabled = true;
+      return false;
+    }
+    if (!arch3d.bgl) {
+      arch3d.bgl = gpu.createBindGroupLayout({
+        label: 'terra_climb_arch_bgl',
+        entries: [
+          { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+          { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
+          { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
+        ],
+      });
+      arch3d.shaderMod = gpu.createShaderModule({ label: 'terra_climb_arch_shader', code: ARCH_WGSL });
+      arch3d.sampler = gpu.createSampler({
+        label: 'terra_climb_arch_samp',
+        magFilter: 'linear',
+        minFilter: 'linear',
+        mipmapFilter: 'linear',
+        addressModeU: 'clamp-to-edge',
+        addressModeV: 'clamp-to-edge',
+        maxAnisotropy: 8,
+      });
+      arch3d.ubuf = gpu.createBuffer({
+        label: 'terra_climb_arch_ub',
+        size: arch3d.uData.byteLength,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+    }
+
+    const key = `${colorFormat}|${depthFormat}|${sampleCount}|${reverseZ ? 'rev' : 'std'}`;
+    if (arch3d.pipe && arch3d.pipeKey === key) return true;
+
+    arch3d.pipe = gpu.createRenderPipeline({
+      label: 'terra_climb_arch_pipe',
+      layout: gpu.createPipelineLayout({ bindGroupLayouts: [arch3d.bgl] }),
+      vertex: {
+        module: arch3d.shaderMod,
+        entryPoint: 'vs',
+        buffers: [{
+          arrayStride: 48,
+          attributes: [
+            { shaderLocation: 0, offset: 0,  format: 'float32x3' },
+            { shaderLocation: 1, offset: 12, format: 'float32x3' },
+            { shaderLocation: 2, offset: 24, format: 'float32x2' },
+            { shaderLocation: 3, offset: 32, format: 'float32x4' },
+          ],
+        }],
+      },
+      fragment: {
+        module: arch3d.shaderMod,
+        entryPoint: 'fs',
+        targets: [{ format: colorFormat }],
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: {
+        format: depthFormat,
+        depthWriteEnabled: true,
+        depthCompare: reverseZ ? 'greater-equal' : 'less-equal',
+      },
+      multisample: { count: sampleCount },
+    });
+    arch3d.pipeKey = key;
+    return true;
+  }
+
+  function installArchRenderHook(env) {
+    const eng = env && env.engine;
+    if (!eng || typeof eng.render !== 'function' || arch3d.eng === eng) return;
+    if (arch3d.eng && arch3d.origRender) {
+      try { arch3d.eng.render = arch3d.origRender; } catch {}
+    }
+    const origRender = eng.render;
+    arch3d.eng = eng;
+    arch3d.origRender = origRender;
+
+    eng.render = function (fs, rq) {
+      if (cleaned || arch3d.disabled || !S.climb_arches_3d || !arch3d.sourceClimbs.length) {
+        return origRender.call(this, fs, rq);
+      }
+      if (!fs || !fs.camera || !fs.camera.viewProj || !fs.origin) {
+        return origRender.call(this, fs, rq);
+      }
+
+      const dev = this.device;
+      const gpu = dev && dev.gpu;
+      const ctx = dev && dev.context;
+      if (!gpu || !ctx || typeof gpu.createCommandEncoder !== 'function') {
+        return origRender.call(this, fs, rq);
+      }
+
+      installArchGpuHooks(gpu);
+      probeArchDepthFormat(this);
+
+      let colorFormat = dev.format || 'bgra8unorm';
+      try {
+        const swapTex = typeof ctx.getCurrentTexture === 'function' ? ctx.getCurrentTexture() : null;
+        if (swapTex && swapTex.format) colorFormat = swapTex.format;
+      } catch {}
+
+      // Ensure base uniform/layout exists and rebuild static arch mesh+atlas only when route/climbs/units changed
+      const preDepthFmt = arch3d.depthFormat || 'depth24plus';
+      const preSamples = arch3d.sampleCount || 4;
+      const preRevZ = arch3d.reverseZ !== null ? arch3d.reverseZ : false;
+      if (!ensureArchPipeline(gpu, colorFormat, preDepthFmt, preSamples, preRevZ)) {
+        return origRender.call(this, fs, rq);
+      }
+      if (arch3d.builtKey !== arch3d.sourceKey || !arch3d.bindGroup) {
+        try {
+          if (!uploadArchResources(gpu)) return origRender.call(this, fs, rq);
+        } catch (e) {
+          terra.log('terra-climb 3D arch build error:', e);
+          arch3d.builtKey = arch3d.sourceKey;
+          return origRender.call(this, fs, rq);
+        }
+      }
+      if (!arch3d.bindGroup || !arch3d.vbuf || !arch3d.ibuf || arch3d.indexCount <= 0) {
+        return origRender.call(this, fs, rq);
+      }
+
+      const ox = Number.isFinite(fs.origin[0]) ? fs.origin[0] : 0;
+      const oz = Number.isFinite(fs.origin[1]) ? fs.origin[1] : 0;
+      const vp = fs.camera.viewProj;
+      const u = arch3d.uData;
+      for (let i = 0; i < 16; i++) u[i] = vp[i];
+      u[16] = arch3d.anchorX - ox;
+      u[17] = 0;
+      u[18] = arch3d.anchorZ - oz;
+      u[19] = colorFormat.endsWith('-srgb') ? 1.0 : 0.0;
+      u[20] = 0.44; u[21] = 0.80; u[22] = 0.40; u[23] = 1.0;
+      const cp = fs.camera.position || fs.camera.pos;
+      u[24] = cp && Number.isFinite(cp[0]) ? cp[0] : (cp && Number.isFinite(cp.x) ? cp.x : 0);
+      u[25] = cp && Number.isFinite(cp[1]) ? cp[1] : (cp && Number.isFinite(cp.y) ? cp.y : 2);
+      u[26] = cp && Number.isFinite(cp[2]) ? cp[2] : (cp && Number.isFinite(cp.z) ? cp.z : 0);
+      u[27] = 0;
+      gpu.queue.writeBuffer(arch3d.ubuf, 0, u);
+
+      // Inject native Biketerra shadow-only proxy draw for nearby arches so pillars & signs cast real sun shadows
+      let renderRq = rq;
+      if (rq && Array.isArray(rq.draws) && arch3d.featScope && arch3d.shadowParts.length > 0) {
+        if (ensureArchShadowAllocated(arch3d.featScope, this)) {
+          const shDraw = updateAndBuildArchShadowDraw(rq.draws, u[24] + ox, u[26] + oz);
+          if (shDraw) {
+            renderRq = { ...rq, draws: rq.draws.concat([shDraw]) };
+            if (!archShadow.loggedActive) {
+              archShadow.loggedActive = true;
+              terra.log('terra-climb 3D arch native shadow proxy active');
+            }
+          }
+        }
+      }
+
+      const rawCreateEncoder = gpu.createCommandEncoder;
+      let injectedThisFrame = false;
+
+      gpu.createCommandEncoder = function (...args) {
+        const enc = rawCreateEncoder.apply(gpu, args);
+        const origBegin = enc.beginRenderPass.bind(enc);
+        enc.beginRenderPass = function (desc) {
+          const pass = origBegin(desc);
+          try {
+            const hasColor = desc && Array.isArray(desc.colorAttachments) && desc.colorAttachments.length === 1 && desc.colorAttachments[0];
+            const ds = desc && desc.depthStencilAttachment;
+            if (!injectedThisFrame && hasColor && ds && !ds.depthReadOnly) {
+              if (typeof ds.depthClearValue === 'number') {
+                arch3d.reverseZ = ds.depthClearValue < 0.5;
+              }
+              const hasResolve = !!desc.colorAttachments[0].resolveTarget;
+              const sampleCount = arch3d.sampleCount || (hasResolve ? 4 : 1);
+              const depthFormat = arch3d.depthFormat || 'depth24plus';
+              const reverseZ = arch3d.reverseZ !== null ? arch3d.reverseZ : false;
+
+              const origEnd = pass.end.bind(pass);
+              pass.end = function () {
+                try {
+                  if (ensureArchPipeline(gpu, colorFormat, depthFormat, sampleCount, reverseZ) && arch3d.bindGroup) {
+                    pass.setPipeline(arch3d.pipe);
+                    pass.setBindGroup(0, arch3d.bindGroup);
+                    pass.setVertexBuffer(0, arch3d.vbuf);
+                    pass.setIndexBuffer(arch3d.ibuf, 'uint32');
+                    pass.drawIndexed(arch3d.indexCount);
+                    injectedThisFrame = true;
+                    if (!arch3d.loggedActive) {
+                      arch3d.loggedActive = true;
+                      terra.log(`terra-climb 3D arches active (${arch3d.sourceClimbs.length} climbs, ${arch3d.indexCount / 3} tris, ${colorFormat}, ${depthFormat}, ${sampleCount}x, revZ=${reverseZ})`);
+                    }
+                  }
+                } catch (e) {
+                  terra.log('terra-climb 3D arch draw error:', e);
+                }
+                return origEnd();
+              };
+            }
+          } catch {}
+          return pass;
+        };
+        return enc;
+      };
+
+      try {
+        return origRender.call(this, fs, renderRq);
+      } finally {
+        gpu.createCommandEncoder = rawCreateEncoder;
+      }
+    };
+  }
+
+  function ensureArchHook() {
+    if (cleaned || arch3d.disabled || !S.climb_arches_3d) return;
+    const bt = window.btApp;
+    if (!bt) return;
+    if (!arch3d.unhookFeature && typeof bt.addFeature === 'function') {
+      try {
+        arch3d.unhookFeature = bt.addFeature((scope, env) => {
+          arch3d.featScope = scope;
+          return {
+            frame() {
+              if (!cleaned && env && env.engine) installArchRenderHook(env);
+            },
+          };
+        });
+      } catch {}
+    }
+    if (bt.engine && typeof bt.engine.render === 'function' && arch3d.eng !== bt.engine) {
+      installArchRenderHook({ engine: bt.engine });
+    }
+  }
+
+  function syncArchSource(route, climbs) {
+    const unitsKey = S.units === 'imperial' ? 'imp' : 'met';
+    const nextKey = route && climbs && climbs.length
+      ? `${route.totalLen.toFixed(1)}|${route.n}|${cachedClimbsKey}|${unitsKey}|${climbs.length}|${climbs[0].startDist.toFixed(1)}`
+      : 'empty';
+    if (arch3d.sourceKey !== nextKey) {
+      arch3d.sourceRoute = route || null;
+      arch3d.sourceClimbs = climbs ? climbs.slice() : [];
+      arch3d.sourceKey = nextKey;
+    }
+    if (S.climb_arches_3d && arch3d.sourceClimbs.length > 0) {
+      ensureArchHook();
+    }
+  }
+
+  function cleanupArches3d() {
+    if (arch3d.unhookFeature) {
+      try { arch3d.unhookFeature(); } catch {}
+      arch3d.unhookFeature = null;
+    }
+    arch3d.featScope = null;
+    if (arch3d.eng && arch3d.origRender) {
+      try { arch3d.eng.render = arch3d.origRender; } catch {}
+    }
+    arch3d.eng = null;
+    arch3d.origRender = null;
+    archShadow.misc = null;
+    archShadow.handle = null;
+    archShadow.dataMap = null;
+    archShadow.posOut = null;
+    archShadow.normOut = null;
+    archShadow.draw = null;
+    archShadow.activeKey = '';
+    archShadow.hasGeo = false;
+    archShadow.uploading = false;
+    restoreArchGpuHooks();
+    destroyArchDynamicBuffers();
+    if (arch3d.ubuf) { try { arch3d.ubuf.destroy(); } catch {} arch3d.ubuf = null; }
+  }
+
   async function reloadSettings() {
     try {
       const all = await terra.settings.all();
       S = { ...DEFAULTS, ...all };
       applyBoxStyle();
       syncRoadGauges();
+      if (cachedRoute) syncArchSource(cachedRoute, cachedClimbs);
     } catch {}
   }
 
@@ -3192,6 +4598,7 @@ svg.tr-cp-svg-zoomed line {
     syncDock();
     const resolved = resolveRoute();
     if (!resolved) {
+      syncArchSource(null, []);
       renderView(ui, null);
       return;
     }
@@ -3204,6 +4611,7 @@ svg.tr-cp-svg-zoomed line {
       cachedClimbsKey = cacheKey;
       overlayBuiltKey = '';
     }
+    syncArchSource(route, cachedClimbs);
 
     const { curDist } = findFocalDistance(route, focal, prev);
     const live = sampleRawAtDist(route, curDist);
@@ -3310,6 +4718,7 @@ svg.tr-cp-svg-zoomed line {
   terra.onCleanup(() => {
     cleaned = true;
     if (timer) clearInterval(timer);
+    cleanupArches3d();
     for (const off of graphClickCleanups) { try { off(); } catch {} }
     graphClickCleanups.length = 0;
     currentOverlayMeta = null;
@@ -3326,5 +4735,5 @@ svg.tr-cp-svg-zoomed line {
     if (ui.root.parentNode) ui.root.remove();
   });
 
-  terra.log('terra-climb (Terra ClimbPro v0.2.2) ready');
+  terra.log('terra-climb (Terra ClimbPro v0.4.0) ready');
 })();

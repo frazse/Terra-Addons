@@ -1,9 +1,9 @@
 {
   "id": "terra-climb",
   "name": "Terra ClimbPro",
-  "version": "0.2.2",
+  "version": "0.4.0",
   "category": "HUD",
-  "description": "First-principles ClimbPro built for Terra: single-row docked HUD with climb categories (Cat 4–HC / Wall), VAM-based time to summit, time-adaptive shift-ahead callouts, conquered-mountain dimming, km-to-summit markers, and automatic crux/relief pins directly on Biketerra's zoomed elevation graph.",
+  "description": "First-principles ClimbPro built for Terra: single-row docked HUD with climb categories (Cat 4–HC / Wall), 3D overhead Start & Summit gantry arches above the road at every climb, VAM-based time to summit, time-adaptive shift-ahead callouts, conquered-mountain dimming, km-to-summit markers, and automatic crux/relief pins directly on Biketerra's zoomed elevation graph.",
   "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
   "js": ["main.js"],
   "settings": [
@@ -14,6 +14,13 @@
       "default": "all",
       "options": ["all", "medium", "large"],
       "description": "all (>=400m @ 3% or >=200m @ 6% walls), medium (Medium & Large), large (Large Only)."
+    },
+    {
+      "key": "climb_arches_3d",
+      "label": "3D Climb Start & Finish arches",
+      "type": "checkbox",
+      "default": true,
+      "description": "Place 3D overhead Start and KOM Summit gantry signs (plus painted road lines) above the road at every detected climb."
     },
     {
       "key": "graph_roadmap",
