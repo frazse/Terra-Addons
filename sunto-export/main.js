@@ -41,9 +41,51 @@
         return sportIdx >= 0 && activity.rows[0][sportIdx] === 1;
     }
 
+    function rowingSpeedFromPower(power) {
+        return power > 0 ? Math.cbrt(power / 2.8) : 0;
+    }
+
+    function convertBiketerraActivityToRowing(activity) {
+        if (!activity || !Array.isArray(activity.rows)) return activity;
+        const keys = Array.isArray(activity.keys) ? [...activity.keys] : [
+            'timestamp', 'lat', 'lng', 'altitude', 'heart_rate', 'cadence',
+            'distance', 'speed', 'power', 'grade', 'power2', 'core_temp',
+            'skin_temp', 'heat_strain', 'draft_pct', 'left_pedal_balance', 'sport'
+        ];
+
+        let sportIdx = keys.indexOf('sport');
+        if (sportIdx === -1) {
+            sportIdx = keys.length;
+            keys.push('sport');
+        }
+
+        const pwrIdx = keys.indexOf('power');
+        const spdIdx = keys.indexOf('speed');
+        const distIdx = keys.indexOf('distance');
+
+        let accumDistance = 0;
+        const rows = activity.rows.map(r => {
+            const row = [...r];
+            while (row.length <= sportIdx) row.push(0);
+            row[sportIdx] = 1;
+
+            const pwr = (pwrIdx >= 0 && row[pwrIdx] != null) ? Number(row[pwrIdx]) : 0;
+            const rowSpeed = rowingSpeedFromPower(pwr);
+            accumDistance += rowSpeed;
+
+            if (spdIdx >= 0) row[spdIdx] = Number(rowSpeed.toFixed(3));
+            if (distIdx >= 0) row[distIdx] = Number(accumDistance.toFixed(2));
+            return row;
+        });
+
+        return { ...activity, keys, rows };
+    }
+
     function applySportToBiketerraActivity(activity, isRowing) {
         if (!activity || !Array.isArray(activity.rows)) return activity;
-        const sportVal = isRowing ? 1 : 0;
+        if (isRowing) {
+            return convertBiketerraActivityToRowing(activity);
+        }
         const keys = Array.isArray(activity.keys) ? [...activity.keys] : [
             'timestamp', 'lat', 'lng', 'altitude', 'heart_rate', 'cadence',
             'distance', 'speed', 'power', 'grade', 'draft_pct', 'sport'
@@ -58,7 +100,7 @@
         const rows = activity.rows.map(r => {
             const row = [...r];
             while (row.length <= sportIdx) row.push(0);
-            row[sportIdx] = sportVal;
+            row[sportIdx] = 0;
             return row;
         });
 
@@ -179,6 +221,7 @@
             : new Array(keys.length).fill(0);
 
             if (kIdx.ts >= 0) template[kIdx.ts] = r.tsMs;
+            // Retain route GPS (lat, lng) from Biketerra template if custom FIT does not provide GPS
             if (kIdx.lat >= 0 && r.lat != null) template[kIdx.lat] = r.lat;
             if (kIdx.lng >= 0 && r.lng != null) template[kIdx.lng] = r.lng;
             if (kIdx.hr >= 0) template[kIdx.hr] = r.hr;
@@ -194,15 +237,19 @@
         const endTs = rows[rows.length - 1][kIdx.ts >= 0 ? kIdx.ts : 0];
         const isRowing = exportMode === 'ROW' || fitDetectedRowing === true;
 
+        const baseEvents = Array.isArray(baseActivity.events) && baseActivity.events.length > 0
+            ? baseActivity.events
+            : [
+                { type: 'start', timestamp: startTs },
+                { type: 'finish', timestamp: endTs - 1000 },
+                { type: 'stop', timestamp: endTs }
+            ];
+
         return applySportToBiketerraActivity({
             ...baseActivity,
             keys,
             rows,
-            events: [
-                { type: 'start', timestamp: startTs },
-                { type: 'finish', timestamp: endTs - 1000 },
-                { type: 'stop', timestamp: endTs }
-            ]
+            events: baseEvents
         }, isRowing);
     }
 
@@ -536,7 +583,7 @@
 
         // 7. Session (Global Msg 18)
         const tot = calcSliceStats(ticks);
-        const finalAscent = pageSummary.climbM ?? tot.ascentM;
+        const finalAscent = isRowing ? tot.ascentM : (pageSummary.climbM ?? tot.ascentM);
         const finalCalories = pageSummary.calories ?? tot.kcal;
         const finalNP = pageSummary.weightedPwr ?? tot.avgPwr;
         const intensityFactor = finalNP / userFtp;
@@ -659,22 +706,23 @@
         const activityId = match ? match[1] : Date.now();
         const activityName = getFormattedActivityName();
 
-        if (customFitBytes && customFitBytes.byteLength > 0) {
-            terra.log(`[Suunto Export] Using custom loaded FIT file: "${customFitName}" (${customFitBytes.byteLength} bytes)`);
-            return {
-                fitBytes: customFitBytes,
-                filename: customFitName || `${activityName.replace(/[\\/:*?"<>|]/g, '-')}.fit`,
- activityName
-            };
-        }
-
         const res = await origFetch(`https://biketerra.com/files/activity/${activityId}`, { credentials: 'include' });
         if (!res.ok) throw new Error(`Failed to fetch activity JSON (HTTP ${res.status})`);
         const activityJson = await res.json();
 
+        if (customFitBytes && customFitBytes.byteLength > 0) {
+            terra.log(`[Suunto Export] Using custom loaded FIT file overlaid with route GPS: "${customFitName}" (${customFitBytes.byteLength} bytes)`);
+            const overlaidActivity = decodeFitToBiketerraActivity(customFitBytes, activityJson);
+            const isRowing = exportMode === 'ROW' || isBiketerraActivityRowing(overlaidActivity);
+            const fitBytes = encodeBiketerraJsonToFIT(overlaidActivity, scrapePageSummary(), activityName, isRowing);
+            const safeFilename = (customFitName || activityName).replace(/[\\/:*?"<>|]/g, '-').replace(/\.fit$/i, '') + '.fit';
+            return { fitBytes, filename: safeFilename, activityName };
+        }
+
         const pageSummary = scrapePageSummary();
         const isRowing = exportMode === 'ROW';
-        const fitBytes = encodeBiketerraJsonToFIT(activityJson, pageSummary, activityName, isRowing);
+        const sourceJson = isRowing ? convertBiketerraActivityToRowing(activityJson) : activityJson;
+        const fitBytes = encodeBiketerraJsonToFIT(sourceJson, pageSummary, activityName, isRowing);
         const safeFilename = activityName.replace(/[\\/:*?"<>|]/g, '-') + '.fit';
 
         terra.log(`[Suunto Export] Encoded ${exportMode} FIT: "${activityName}" (${fitBytes.byteLength} bytes)`);
