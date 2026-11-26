@@ -246,14 +246,17 @@
   graphs['spm'] = graphs['rpm'];
 
   // ---- Live telemetry priority:
-  //   1. window.btApp.riderController (focalRider / ego)
-  //   2. biketerra-ride broadcast (terra.ride)
-  //   3. DOM scraping (.stat-cell .stat-value)
+  //   - When rowing (sport === 1 on ego/focalRider): DOM scraping (.stat-cell .stat-value)
+  //   - Otherwise:
+  //       1. window.btApp.riderController (focalRider / ego) for power; biketerra-ride for speed/cadence/HR
+  //       2. biketerra-ride / btApp fallback
+  //       3. DOM scraping (.stat-cell .stat-value)
   let rideFrame = null;
   let offRide = null;
   let rideBroadcastChannel = null;
   let lastFeedAt = 0;
-  let activeSource = null; // 'btApp' | 'ride' | 'dom'
+  let activeSource = null; // 'btApp' | 'ride' | 'dom' | 'dom-rowing'
+  let wasRowing = false;
   const FEED_FRESH_MS = 2500;
   const powerSamples = []; // { val, t } for optional 3s/10s readout smoothing
 
@@ -397,6 +400,28 @@
 
   const feedFresh = () => rideFrame !== null && (performance.now() - lastFeedAt) < FEED_FRESH_MS;
 
+  function isSportOne(val) {
+    return val === 1 || val === '1' || val === 'row' || val === 'rowing';
+  }
+
+  function isRowingRider(rc, btRider, feedObj) {
+    if (btRider && typeof btRider === 'object') {
+      const srcs = [btRider, btRider.sim, btRider.userData, btRider.stats, btRider.state, btRider.telemetry];
+      for (const src of srcs) {
+        if (src && typeof src === 'object' && isSportOne(src.sport)) return true;
+      }
+    }
+    if (feedObj && typeof feedObj === 'object' && isSportOne(feedObj.sport)) {
+      return true;
+    }
+    const isSpectatingOther = !!(rc && rc.ego && btRider && btRider !== rc.ego);
+    if (!isSpectatingOther && !window.location.pathname.includes('/spectate') && rideFrame && typeof rideFrame === 'object') {
+      if (isSportOne(rideFrame.sport)) return true;
+      if (rideFrame.ego && typeof rideFrame.ego === 'object' && isSportOne(rideFrame.ego.sport)) return true;
+    }
+    return false;
+  }
+
   function noteSource(src) {
     if (activeSource === src || typeof terra === 'undefined' || !terra.log) return;
     activeSource = src;
@@ -404,6 +429,8 @@
       terra.log('[Garmin HUD] Live: driving the HUD from btApp.riderController (focal/ego) (~10Hz).');
     } else if (src === 'ride') {
       terra.log('[Garmin HUD] Live: driving the HUD from biketerra-ride fallback (~2Hz).');
+    } else if (src === 'dom-rowing') {
+      terra.log('[Garmin HUD] Rowing (sport=1): driving the HUD from DOM scraping (~10Hz).');
     } else if (src === 'dom') {
       terra.log('[Garmin HUD] Fallback: driving the HUD from DOM scraping (~1Hz).');
     }
@@ -415,7 +442,7 @@
     lastFeedAt = performance.now();
     const rc = getBtController();
     const btRider = getBtRider(rc);
-    if (!btHasAnyMetric(btRider)) {
+    if (!isRowingRider(rc, btRider, resolveFeedObject(rc, btRider)) && !btHasAnyMetric(btRider)) {
       noteSource('ride');
       tick();
     }
@@ -446,7 +473,20 @@
     }
   }
 
-  function readMetric(unit, valueNode, rc, btRider, feedObj, isFeedFresh) {
+  function readDomMetric(unit, valueNode) {
+    const raw = valueNode ? (valueNode.textContent || valueNode.innerText || '') : '';
+    const domVal = parseFloat(raw) || 0;
+    const v = (unit === 'mph') ? domVal * 1.609344 : domVal; // normalize internal speed to km/h
+    if (unit === 'kph' || unit === 'mph') {
+      return speedUnit === 'mph' ? v * 0.62137119 : v;
+    }
+    return v;
+  }
+
+  function readMetric(unit, valueNode, rc, btRider, feedObj, isFeedFresh, isRowing) {
+    if (isRowing) {
+      return readDomMetric(unit, valueNode);
+    }
     let v = null;
     if (unit === 'W' || unit === 'w') {
       // Power stays on btApp.riderController (~10Hz)
@@ -461,8 +501,7 @@
       }
     }
     if (v === null) {
-      const domVal = parseFloat(valueNode.innerText) || 0;
-      v = (unit === 'mph') ? domVal * 1.609344 : domVal; // normalize internal speed to km/h
+      return readDomMetric(unit, valueNode);
     }
     if (unit === 'kph' || unit === 'mph') {
       return speedUnit === 'mph' ? v * 0.62137119 : v;
@@ -484,18 +523,18 @@
 
   let renderInterval = null;
 
-  function sampleOnce(rc, btRider, feedObj, isFeedFresh, now) {
+  function sampleOnce(rc, btRider, feedObj, isFeedFresh, now, isRowing) {
     const windowStart = now - WINDOW_MS;
     document.querySelectorAll('.stat-cell').forEach((cell) => {
       const valueNode = cell.querySelector('.stat-value');
       const unitNode = cell.querySelector('.stat-unit');
       if (!valueNode || !unitNode) return;
 
-      const unit = unitNode.innerText.trim().toLowerCase();
+      const unit = (unitNode.textContent || unitNode.innerText || '').trim().toLowerCase();
       const graphInfo = graphs[unit === 'w' ? 'W' : unit];
       if (!graphInfo) return;
 
-      const st = feedMetricState[graphInfo.type];
+      const st = !isRowing ? feedMetricState[graphInfo.type] : null;
       if (st) {
         const feedTs = (isFeedFresh && rideFrame)
           ? ((typeof rideFrame.timestamp === 'number' && rideFrame.timestamp > 0) ? rideFrame.timestamp : lastFeedAt)
@@ -507,7 +546,7 @@
             return;
           }
         }
-        const val = readMetric(unit === 'w' ? 'W' : unit, valueNode, rc, btRider, feedObj, isFeedFresh);
+        const val = readMetric(unit === 'w' ? 'W' : unit, valueNode, rc, btRider, feedObj, isFeedFresh, isRowing);
         st.val = val;
         if (feedTs > 0) st.feedTs = feedTs;
         st.btAt = now;
@@ -523,7 +562,7 @@
         return;
       }
 
-      const val = readMetric(unit === 'w' ? 'W' : unit, valueNode, rc, btRider, feedObj, isFeedFresh);
+      const val = readMetric(unit === 'w' ? 'W' : unit, valueNode, rc, btRider, feedObj, isFeedFresh, isRowing);
 
       if (graphInfo.type === 'power') {
         powerSamples.push({ val, t: now });
@@ -547,7 +586,7 @@
     });
   }
 
-  function renderOnce(rc, btRider, feedObj, isFeedFresh, now) {
+  function renderOnce(rc, btRider, feedObj, isFeedFresh, now, isRowing) {
     const windowStart = now - WINDOW_MS;
     const statCells = document.querySelectorAll('.stat-cell');
 
@@ -564,15 +603,15 @@
       const unitNode = cell.querySelector('.stat-unit');
       if (!valueNode || !unitNode) return;
 
-      const rawUnit = unitNode.innerText.trim();
+      const rawUnit = (unitNode.textContent || unitNode.innerText || '').trim();
       const unitKey = rawUnit.toLowerCase() === 'w' ? 'W' : rawUnit.toLowerCase();
       const graphInfo = graphs[unitKey];
       if (!graphInfo) return;
 
-      const st = feedMetricState[graphInfo.type];
+      const st = !isRowing ? feedMetricState[graphInfo.type] : null;
       const val = (st && st.val !== null)
         ? st.val
-        : readMetric(unitKey, valueNode, rc, btRider, feedObj, isFeedFresh);
+        : readMetric(unitKey, valueNode, rc, btRider, feedObj, isFeedFresh, isRowing);
       const displayVal = graphInfo.type === 'power' ? smoothedPower(val, now) : val;
 
       const valueStyle = window.getComputedStyle(valueNode);
@@ -715,9 +754,17 @@
     const rc = getBtController();
     const btRider = getBtRider(rc);
     const isFeedFresh = feedFresh();
-    const feedObj = isFeedFresh ? resolveFeedObject(rc, btRider) : null;
-    sampleOnce(rc, btRider, feedObj, isFeedFresh, now);
-    renderOnce(rc, btRider, feedObj, isFeedFresh, now);
+    const feedObj = rideFrame ? resolveFeedObject(rc, btRider) : null;
+    const isRowing = isRowingRider(rc, btRider, feedObj);
+    if (isRowing !== wasRowing) {
+      wasRowing = isRowing;
+      feedMetricState.speed = makeFeedState();
+      feedMetricState.cadence = makeFeedState();
+      feedMetricState.hr = makeFeedState();
+    }
+    const freshFeedObj = isFeedFresh ? feedObj : null;
+    sampleOnce(rc, btRider, freshFeedObj, isFeedFresh, now, isRowing);
+    renderOnce(rc, btRider, freshFeedObj, isFeedFresh, now, isRowing);
   }
 
   let lastDomTickAt = 0;
@@ -725,6 +772,12 @@
     renderInterval = setInterval(() => {
       const rc = getBtController();
       const btRider = getBtRider(rc);
+      const feedObj = rideFrame ? resolveFeedObject(rc, btRider) : null;
+      if (isRowingRider(rc, btRider, feedObj)) {
+        if (document.querySelector('.stat-cell')) noteSource('dom-rowing');
+        tick();
+        return;
+      }
       if (btHasAnyMetric(btRider)) {
         noteSource('btApp');
         tick();

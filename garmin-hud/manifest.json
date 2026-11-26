@@ -1,9 +1,9 @@
 {
   "id": "garmin-hud",
   "name": "Garmin HUD",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "category": "HUD",
-  "description": "Replaces standard stat cells with Garmin-style rolling graphs colored by live Biketerra zones. Power uses btApp.riderController (~10Hz); speed, cadence, and heart rate prefer biketerra-ride (~2Hz), falling back to DOM scraping.",
+  "description": "Replaces standard stat cells with Garmin-style rolling graphs colored by live Biketerra zones. When rowing (sport=1), reads live telemetry directly from the DOM; otherwise power uses btApp.riderController (~10Hz) and speed, cadence, and heart rate prefer biketerra-ride (~2Hz).",
   "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate/*"],
   "js": ["main.js"],
   "connect": ["intervals.icu"],

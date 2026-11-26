@@ -1,3 +1,6 @@
+## 1.4.3
+- Read all live metrics from the DOM (`.stat-cell .stat-value`) when `sport = 1` (rowing) on `ego` / `focalRider`
+
 ## 1.4.2
 - Subscribe directly to `BroadcastChannel('biketerra-ride')` alongside `terra.ride.onRide`, merge `ego` and `riders` feed entries, support `spm` cadence units, and fix feed timestamp deduplication when `frame.timestamp` is omitted
 
