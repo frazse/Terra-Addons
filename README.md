@@ -9,7 +9,9 @@ Experimental / sandbox addons that are **not** part of the `main` branch and do 
 - **`ghost-rider`** — Race against a 3D ghost cyclist loaded from a previous `.fit` or `.gpx` activity with live time/power gap.
 - **`karoo-bridge`** — Streams live Biketerra ride telemetry over UDP to a Hammerhead Karoo companion app and pushes routes to Hammerhead.
 - **`pip-cam`** — Picture-in-Picture secondary 3D camera (Static World Tripod, Route Watcher, Rear-View Mirror, Chase Drone).
+- **`realistic-gears`** *(v1.3.0 experimental)* — Adds automatic sequential lowest-to-highest ratio shifting for Zwift Click / Click v2 and binds `00000003-19ca` only on trainers (`FTMS`/`CPS`).
 - **`sbs3d`** — Side-by-side stereo 3D sandbox for Viture XR glasses via single-window double-render.
+- **`zwift-ride`** *(v0.7.0 experimental)* — Adds Zwift Click v2 dual-pod support, 24h Left-pod auth check, `−` hold-modifier combos (camera & group view), and BLE supervisor-gated reconnects.
 
 ## Installing manually
 

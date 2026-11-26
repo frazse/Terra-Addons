@@ -1,0 +1,10 @@
+{
+  "id": "zwift-ride",
+  "name": "Zwift Ride / Click v2 controller",
+  "version": "0.7.0",
+  "category": "Hardware",
+  "description": "Zwift Ride & Zwift Click v2 controllers: ride hotkeys, D-pad navigation, BLE battery & 24h Click v2 auth check, presets, and mapping panel.",
+  "matches": ["https://biketerra.com/*", "https://*.biketerra.com/*"],
+  "js": ["config.js", "nav.js", "camera.js", "ride.js", "panel.js", "console-ui.js", "main.js"],
+  "css": ["style.css"]
+}
