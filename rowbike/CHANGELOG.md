@@ -1,3 +1,7 @@
+## 0.2.1
+- Rename addon to Rowterra
+- Read ego/focal cadence and power from DOM `.stat-cell` (falling back to BLE / `biketerra-ride`), preserve `0` cadence from broadcast frames, and stop inferring strokes from speed alone so the rower coasts cleanly when you stop rowing
+
 ## 0.2.0
 - Add standing-still idle animation (left foot planted flat on the road with bike lean into it, ignoring pre-start `sim.cadence = 80`)
 - Flatten wrist flexion and raise knuckle grip target at the finish so hands stay cleanly on top of the handlebars

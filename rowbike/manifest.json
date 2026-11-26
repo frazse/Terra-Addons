@@ -1,9 +1,9 @@
 {
   "id": "rowbike",
-  "name": "Rowbike Avatar (Experiment)",
-  "version": "0.2.0",
+  "name": "Rowterra",
+  "version": "0.2.1",
   "category": "Camera",
-  "description": "Experimental 3D Rowbike 720 Sport + animated rowing avatar replacement for your rider in Biketerra.",
+  "description": "3D rowing bike + animated rowing avatar replacement for your rider in Biketerra.",
   "matches": ["https://biketerra.com/ride*", "https://biketerra.com/spectate*"],
   "js": ["main.js"],
   "css": ["style.css"],
@@ -23,11 +23,11 @@
       "type": "select",
       "options": ["real", "stylized"],
       "default": "real",
-      "description": "real = animate your actual Biketerra player avatar (jersey, helmet, face, shadows) on the Rowbike; stylized = procedural fallback rower."
+      "description": "real = animate your actual Biketerra player avatar (jersey, helmet, face, shadows) on the Rowterra bike; stylized = procedural fallback rower."
     },
     {
       "key": "colorSource",
-      "label": "Rowbike color theme",
+      "label": "Rowterra color theme",
       "type": "select",
       "options": ["rider_bike", "custom"],
       "default": "rider_bike",

@@ -1,5 +1,5 @@
-/* Rowbike Avatar (Experiment) v0.2.0
- * Replaces rowing riders' Biketerra bike + avatar with an articulated 3D Rowbike 720 Sport
+/* Rowterra v0.2.1
+ * Replaces rowing riders' Biketerra bike + avatar with an articulated 3D rowing bike
  * and biomechanically animated rower (wearing each rider's live design kit and bike colors).
  *
  * - Strips rowing riders' default `bike` + `spoke` draws in `engine.render` (other riders untouched).
@@ -10,7 +10,7 @@
 
 (async () => {
   const log = (...a) => {
-    try { terra.log(...a); } catch { try { console.log('[rowbike]', ...a); } catch {} }
+    try { terra.log(...a); } catch { try { console.log('[rowterra]', ...a); } catch {} }
   };
 
   if (window.__terraRowbikeCleanup) {
@@ -111,8 +111,9 @@
     egoSportRow: false,        // true when ego / focal has sport === 1 in biketerra-ride
     rowingIds: new Set(),      // rider IDs (String) with sport === 1 in biketerra-ride
     rowingNames: new Set(),    // normalized rider names with sport === 1 in biketerra-ride
-    spmById: new Map(),        // id -> spm from biketerra-ride cadence
-    spmByName: new Map(),      // normName -> spm from biketerra-ride cadence
+    spmById: new Map(),        // id -> spm from biketerra-ride cadence (including 0 when coasting)
+    spmByName: new Map(),      // normName -> spm from biketerra-ride cadence (including 0 when coasting)
+    egoCadence: null,          // frame.ego.cadence when finite
     spm: 0,
     lastSpmMs: 0,
     powerW: 0,
@@ -129,6 +130,9 @@
   function onRideBroadcastFrame(frame) {
     if (!frame || typeof frame !== 'object') return;
     bleRow.egoSportRow = isSportOne(frame.sport) || Boolean(frame.ego && isSportOne(frame.ego.sport));
+    bleRow.egoCadence = (frame.ego && frame.ego.cadence !== null && frame.ego.cadence !== undefined && frame.ego.cadence !== '' && Number.isFinite(+frame.ego.cadence))
+      ? Math.max(0, +frame.ego.cadence)
+      : null;
     bleRow.rowingIds.clear();
     bleRow.rowingNames.clear();
     bleRow.spmById.clear();
@@ -137,15 +141,18 @@
       for (let i = 0; i < frame.riders.length; i++) {
         const r = frame.riders[i];
         if (!r || !isSportOne(r.sport)) continue;
+        const rCad = (r.cadence !== null && r.cadence !== undefined && r.cadence !== '' && Number.isFinite(+r.cadence))
+          ? Math.max(0, +r.cadence)
+          : null;
         if (r.id != null) {
           const sid = String(r.id);
           bleRow.rowingIds.add(sid);
-          if (Number.isFinite(+r.cadence) && +r.cadence > 0) bleRow.spmById.set(sid, +r.cadence);
+          if (rCad !== null) bleRow.spmById.set(sid, rCad);
         }
         const nm = normName(r.name);
         if (nm) {
           bleRow.rowingNames.add(nm);
-          if (Number.isFinite(+r.cadence) && +r.cadence > 0) bleRow.spmByName.set(nm, +r.cadence);
+          if (rCad !== null) bleRow.spmByName.set(nm, rCad);
         }
       }
     }
@@ -757,42 +764,104 @@
     };
   }
 
+  const domStatCache = {
+    lastScanMs: 0,
+    cadNode: null,
+    pwrNode: null,
+  };
+
+  function refreshDomStatNodes(now) {
+    if (domStatCache.cadNode && domStatCache.cadNode.isConnected &&
+        domStatCache.pwrNode && domStatCache.pwrNode.isConnected) {
+      return;
+    }
+    if ((now - domStatCache.lastScanMs) < 250) return;
+    domStatCache.lastScanMs = now;
+    domStatCache.cadNode = null;
+    domStatCache.pwrNode = null;
+    if (typeof document === 'undefined' || typeof document.querySelectorAll !== 'function') return;
+    const cells = document.querySelectorAll('.stat-cell');
+    for (let i = 0; i < cells.length; i++) {
+      const cell = cells[i];
+      const valNode = cell.querySelector('.stat-value');
+      const unitNode = cell.querySelector('.stat-unit');
+      if (!valNode || !unitNode) continue;
+      const unit = (unitNode.textContent || unitNode.innerText || '').trim().toLowerCase();
+      if (unit === 'spm' || unit === 'rpm') {
+        domStatCache.cadNode = valNode;
+      } else if (unit === 'w') {
+        domStatCache.pwrNode = valNode;
+      }
+    }
+  }
+
+  function readDomTelemetry(now) {
+    refreshDomStatNodes(now);
+    const hasCadence = !!(domStatCache.cadNode && domStatCache.cadNode.isConnected);
+    const hasPower = !!(domStatCache.pwrNode && domStatCache.pwrNode.isConnected);
+    return {
+      hasCadence,
+      cadence: hasCadence ? (parseFloat(domStatCache.cadNode.textContent || domStatCache.cadNode.innerText || '') || 0) : 0,
+      hasPower,
+      power: hasPower ? (parseFloat(domStatCache.pwrNode.textContent || domStatCache.pwrNode.innerText || '') || 0) : 0,
+    };
+  }
+
   function stepRiderAnimation(rider, st, dt, isEgo) {
     const sim = rider && rider.sim;
     const now = performance.now();
     const speed = (sim && Number.isFinite(sim.speed)) ? Math.max(0, sim.speed) : 0;
-    const power = (sim && Number.isFinite(sim.power)) ? Math.max(0, sim.power) : 0;
-    let cad = (sim && Number.isFinite(sim.cadence)) ? Math.max(0, sim.cadence) : 0;
-    // Before an activity starts (or when standing still with 0 W and 0 m/s), Biketerra initializes
-    // `sim.cadence = 80` as a placeholder (`80 * 0.32 = 25.6 -> 26 SPM`). Ignore `sim.cadence` when
-    // stationary with no power so the rider stays in the idle pose until actually moving or rowing.
-    if (speed < 0.05 && power < 1) {
-      cad = 0;
-    }
-    if (cad <= 0 && sim) {
-      const sid = sim.id ?? sim.athleteId ?? rider.id ?? null;
-      if (sid != null && bleRow.spmById.has(String(sid))) {
-        cad = bleRow.spmById.get(String(sid));
-      } else {
-        const nm = btRiderFullName(rider);
-        if (nm && bleRow.spmByName.has(nm)) cad = bleRow.spmByName.get(nm);
-      }
-    }
+    let power = (sim && Number.isFinite(sim.power)) ? Math.max(0, sim.power) : 0;
+    let cad = 0;
+    let hasCadSource = false;
 
     // Spin 20" wheels (r = 0.255m) matching ground speed
     st.wheelSpin = (st.wheelSpin + (speed * dt) / 0.255) % (Math.PI * 2);
 
-    // Determine live stroke rate (SPM)
+    if (isEgo) {
+      // Match Garmin HUD rowing source: prefer DOM .stat-cell cadence/power so coasting drops to 0 spm immediately
+      const dom = readDomTelemetry(now);
+      if (dom.hasPower) power = dom.power;
+      if (dom.hasCadence) {
+        cad = dom.cadence;
+        hasCadSource = true;
+      } else if (bleRow.lastSpmMs > 0 && (now - bleRow.lastSpmMs) < 5000) {
+        cad = bleRow.spm;
+        hasCadSource = true;
+      } else if (bleRow.egoCadence !== null) {
+        cad = bleRow.egoCadence;
+        hasCadSource = true;
+      }
+    }
+
+    if (!hasCadSource && sim) {
+      const sid = sim.id ?? sim.athleteId ?? rider.id ?? null;
+      if (sid != null && bleRow.spmById.has(String(sid))) {
+        cad = bleRow.spmById.get(String(sid));
+        hasCadSource = true;
+      } else {
+        const nm = btRiderFullName(rider);
+        if (nm && bleRow.spmByName.has(nm)) {
+          cad = bleRow.spmByName.get(nm);
+          hasCadSource = true;
+        }
+      }
+    }
+
+    if (!hasCadSource && !isEgo && sim && Number.isFinite(sim.cadence)) {
+      // Ignore Biketerra's placeholder `sim.cadence = 80` when stationary or zero power
+      if (speed >= 0.05 && power >= 1) {
+        cad = Math.max(0, sim.cadence);
+      }
+    }
+
+    // Determine live stroke rate (SPM): 0 spm when coasting (even while moving)
     let spm = 0;
-    if (isEgo && bleRow.spm > 4 && (now - bleRow.lastSpmMs) < 5000) {
-      spm = clamp(bleRow.spm, 12, 46);
-    } else if (cad > 5) {
+    if (cad > 5) {
       // Direct SPM if <= 45 (rower), or scaled cycling cadence -> realistic rowing SPM
       spm = cad <= 45 ? clamp(cad, 14, 45) : clamp(cad * 0.32, 18, 36);
-    } else if (power > 10) {
+    } else if (!hasCadSource && power > 10) {
       spm = clamp(18 + power / 18, 18, 36);
-    } else if (speed > 0.6) {
-      spm = 22;
     }
 
     st.spm = spm;
